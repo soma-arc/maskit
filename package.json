@@ -6,12 +6,21 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "generate:ref:640": ".venv/bin/python BQ.py --width 640 --height 640 --step 0.025 > img-640.ppm",
+    "compare:images": "node scripts/compare-images.mjs",
+    "render:browser": "node scripts/render-with-browser.mjs",
+    "compare:browser": "node scripts/compare-with-browser.mjs",
+    "render:ref": "node scripts/render-with-browser.mjs out/render/reference.ppm 320 320 5",
+    "compare:ref": "node scripts/compare-with-browser.mjs img.ppm out/render/reference.ppm out/compare/reference 5 320 320 32 96 512",
+    "render:ref:640": "node scripts/render-with-browser.mjs out/render/reference-640.ppm 640 640 5",
+    "compare:ref:640": "node scripts/compare-with-browser.mjs img-640.ppm out/render/reference-640.ppm out/compare/reference-640 5 640 640 32 96 512",
     "lint": "biome lint ./src",
     "format": "biome format --write ./src",
     "check": "biome check --write ./src"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.11",
+    "@playwright/test": "^1.59.1",
     "vite": "^6.0.0"
   }
 }
