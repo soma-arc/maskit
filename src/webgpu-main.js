@@ -159,26 +159,28 @@ function setParams(params = {}) {
     applyResolution();
 }
 
-window.__maskitTest = {
-    setParams,
-    renderOnce: async () => {
-        const wallStart = performance.now();
-        await renderer.renderOnce(state);
-        return {
-            ...getState(),
-            wallRenderMs: performance.now() - wallStart,
-        };
-    },
-    exportPpm: async () => buildCurrentFramePpm(),
-    getState,
-    resetView: () => {
-        state.offsetX = DEFAULT_VIEW.offsetX;
-        state.offsetY = DEFAULT_VIEW.offsetY;
-        state.scale = defaultScaleForResolution(state.width, state.height);
-        syncInputsWithState(elements, state);
-        updateStatus('view reset to match the BQ.py default window');
-    },
-};
+function installAutomationApi() {
+    window.__maskitTest = {
+        setParams,
+        renderOnce: async () => {
+            const wallStart = performance.now();
+            await renderer.renderOnce(state);
+            return {
+                ...getState(),
+                wallRenderMs: performance.now() - wallStart,
+            };
+        },
+        exportPpm: async () => buildCurrentFramePpm(),
+        getState,
+        resetView: () => {
+            state.offsetX = DEFAULT_VIEW.offsetX;
+            state.offsetY = DEFAULT_VIEW.offsetY;
+            state.scale = defaultScaleForResolution(state.width, state.height);
+            syncInputsWithState(elements, state);
+            updateStatus('view reset to match the BQ.py default window');
+        },
+    };
+}
 
 function frame() {
     renderer.render(state);
@@ -204,6 +206,7 @@ async function main() {
 
     syncInputsWithState(elements, state);
     applyResolution();
+    installAutomationApi();
     updateStatus('WebGPU preview ready');
     if (!isAutomation) {
         requestAnimationFrame(frame);

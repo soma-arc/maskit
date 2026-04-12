@@ -3,6 +3,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium } from '@playwright/test';
+import { getBrowserLaunchOptions, isWebgpuPage } from './playwright-launch-options.mjs';
 
 const rootDir = path.resolve(new URL('..', import.meta.url).pathname);
 const distDir = path.join(rootDir, 'dist');
@@ -132,12 +133,11 @@ export async function renderWithBrowser({
   let browser;
 
   try {
-    browser = await chromium.launch({
-      channel: 'chrome',
-      executablePath: process.env.BROWSER,
-      headless: true,
-      args: ['--enable-unsafe-webgpu'],
-    });
+    browser = await chromium.launch(
+      getBrowserLaunchOptions({
+        webgpu: isWebgpuPage(pagePath),
+      }),
+    );
     cleanupController.setBrowser(browser);
 
     const page = await browser.newPage({
