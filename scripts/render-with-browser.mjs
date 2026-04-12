@@ -146,6 +146,14 @@ export async function renderWithBrowser({
         height: Math.max(Number(height), 1),
       },
     });
+    page.on('pageerror', (error) => {
+      console.error(`pageerror: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+    });
+    page.on('console', (message) => {
+      if (message.type() === 'error') {
+        console.error(`console.error: ${message.text()}`);
+      }
+    });
 
     await page.goto(buildPageUrl(actualPort, pagePath), { waitUntil: 'networkidle' });
     await page.waitForFunction(() => Boolean(window.__maskitTest));
