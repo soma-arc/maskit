@@ -1,0 +1,29 @@
+# Node.js / pnpm
+node_modules/
+
+# Vite build cache and outputs
+dist/
+.vite/
+
+# Local Python environment
+.venv/
+
+# Local tooling metadata
+.codex
+.serena/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Comparison and test artifacts
+artifacts/
+out/
+tmp/
+playwright-report/
+test-results/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db

@@ -1,0 +1,17 @@
+{
+  "name": "maskit",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "biome lint ./src",
+    "format": "biome format --write ./src",
+    "check": "biome check --write ./src"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.11",
+    "vite": "^6.0.0"
+  }
+}
