@@ -9,11 +9,16 @@ struct Uniforms {
     maxDfsVisits: f32,
 };
 
-struct VertexOutput {
+struct BlitVertexOutput {
     @builtin(position) position: vec4f,
+    @location(0) uv: vec2f,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var outputTexture: texture_storage_2d<rgba8unorm, write>;
+
+@group(1) @binding(0) var outputSampler: sampler;
+@group(1) @binding(1) var outputTextureForSampling: texture_2d<f32>;
 
 const MAX_SINK_ITERS_LIMIT: i32 = 64;
 const MAX_DFS_DEPTH_LIMIT: i32 = 96;
@@ -201,22 +206,8 @@ fn bq_bounded(a: vec2f, b: vec2f, c: vec2f) -> bool {
         bq_dfs_bounded(sinkC, sinkB, sinkA);
 }
 
-@vertex
-fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
-    var positions = array<vec2f, 3>(
-        vec2f(-1.0, -3.0),
-        vec2f(-1.0, 1.0),
-        vec2f(3.0, 1.0),
-    );
-
-    var output: VertexOutput;
-    output.position = vec4f(positions[vertexIndex], 0.0, 1.0);
-    return output;
-}
-
-@fragment
-fn fs_main(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
-    let x = (fragCoord.xy - uniforms.resolution * 0.5) / uniforms.scale + uniforms.offset;
+fn computeColor(fragCoord: vec2f) -> vec4f {
+    let x = (fragCoord - uniforms.resolution * 0.5) / uniforms.scale + uniforms.offset;
     let y = uniforms.y;
 
     let xx = c_mul(x, x);
@@ -250,4 +241,34 @@ fn fs_main(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
     }
 
     return vec4f(color, 1.0);
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) globalId: vec3u) {
+    if (globalId.x >= u32(uniforms.resolution.x) || globalId.y >= u32(uniforms.resolution.y)) {
+        return;
+    }
+
+    let pixelCoord = vec2f(globalId.xy) + vec2f(0.5, 0.5);
+    textureStore(outputTexture, vec2i(globalId.xy), computeColor(pixelCoord));
+}
+
+@vertex
+fn blit_vs_main(@builtin(vertex_index) vertexIndex: u32) -> BlitVertexOutput {
+    var positions = array<vec2f, 3>(
+        vec2f(-1.0, -3.0),
+        vec2f(-1.0, 1.0),
+        vec2f(3.0, 1.0),
+    );
+
+    let position = positions[vertexIndex];
+    var output: BlitVertexOutput;
+    output.position = vec4f(position, 0.0, 1.0);
+    output.uv = position * vec2f(0.5, -0.5) + vec2f(0.5, 0.5);
+    return output;
+}
+
+@fragment
+fn blit_fs_main(input: BlitVertexOutput) -> @location(0) vec4f {
+    return textureSampleLevel(outputTextureForSampling, outputSampler, input.uv, 0.0);
 }
