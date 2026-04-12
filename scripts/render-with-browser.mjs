@@ -55,11 +55,62 @@ function createStaticServer(port) {
   });
 }
 
+function buildPageUrl(port, pagePath) {
+  const url = new URL(`http://127.0.0.1:${port}${pagePath}`);
+  url.searchParams.set('automation', '1');
+  return url.toString();
+}
+
+function createCleanupController() {
+  let browser = null;
+  let server = null;
+  let cleaned = false;
+
+  async function cleanup() {
+    if (cleaned) return;
+    cleaned = true;
+
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+
+    if (server) {
+      await new Promise((resolve) => {
+        server.close(() => resolve());
+      }).catch(() => {});
+    }
+  }
+
+  const signalHandler = () => {
+    cleanup().finally(() => {
+      process.exit(130);
+    });
+  };
+
+  process.once('SIGINT', signalHandler);
+  process.once('SIGTERM', signalHandler);
+
+  return {
+    setBrowser(value) {
+      browser = value;
+    },
+    setServer(value) {
+      server = value;
+    },
+    async cleanup() {
+      process.off('SIGINT', signalHandler);
+      process.off('SIGTERM', signalHandler);
+      await cleanup();
+    },
+  };
+}
+
 export async function renderWithBrowser({
   outputPath = 'out/render/browser-output.ppm',
   width = 320,
   height = 320,
   mode = 0,
+  pagePath = '/',
   yReal = 2,
   yImag = 6,
   offsetX = 1.975,
@@ -75,7 +126,9 @@ export async function renderWithBrowser({
     fail('dist/index.html がありません。先に pnpm build を実行してください。');
   }
 
+  const cleanupController = createCleanupController();
   const { server, port: actualPort } = await createStaticServer(port);
+  cleanupController.setServer(server);
   let browser;
 
   try {
@@ -83,7 +136,9 @@ export async function renderWithBrowser({
       channel: 'chrome',
       executablePath: process.env.BROWSER,
       headless: true,
+      args: ['--enable-unsafe-webgpu'],
     });
+    cleanupController.setBrowser(browser);
 
     const page = await browser.newPage({
       viewport: {
@@ -92,14 +147,14 @@ export async function renderWithBrowser({
       },
     });
 
-    await page.goto(`http://127.0.0.1:${actualPort}/`, { waitUntil: 'networkidle' });
+    await page.goto(buildPageUrl(actualPort, pagePath), { waitUntil: 'networkidle' });
     await page.waitForFunction(() => Boolean(window.__maskitTest));
 
     const result = await page.evaluate(async (params) => {
       window.__maskitTest.setParams(params);
       const state = await window.__maskitTest.renderOnce();
       return {
-        ppm: window.__maskitTest.exportPpm(),
+        ppm: await window.__maskitTest.exportPpm(),
         state,
       };
     }, {
@@ -120,16 +175,7 @@ export async function renderWithBrowser({
     fs.writeFileSync(outputPath, result.ppm);
     return returnState ? { outputPath, state: result.state } : outputPath;
   } finally {
-    if (browser) {
-      await browser.close();
-    }
-
-    await new Promise((resolve, reject) => {
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve();
-      });
-    });
+    await cleanupController.cleanup();
   }
 }
 
@@ -141,6 +187,7 @@ async function main() {
     width = '320',
     height = '320',
     mode = '0',
+    pagePath = '/',
   ] = process.argv;
 
   const resultPath = await renderWithBrowser({
@@ -148,6 +195,7 @@ async function main() {
     width: Number(width),
     height: Number(height),
     mode: Number(mode),
+    pagePath,
   });
 
   console.log(resultPath);

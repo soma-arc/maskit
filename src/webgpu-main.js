@@ -1,7 +1,5 @@
 import { buildPpmFromRgba, downloadPpm } from './ppm-export.js';
-import { createWebglRenderer } from './renderers/webgl.js';
-import FRAG_SRC from './shaders/frag.glsl?raw';
-import VERT_SRC from './shaders/vert.glsl?raw';
+import { createWebgpuRenderer } from './renderers/webgpu.js';
 import {
     applyCanvasResolution,
     buildStatusText,
@@ -19,23 +17,26 @@ const elements = getViewerElements();
 const { canvas } = elements;
 const searchParams = new URLSearchParams(window.location.search);
 const isAutomation = searchParams.get('automation') === '1';
+const state = createInitialViewerState(elements, searchParams);
 
 let renderer;
-try {
-    renderer = createWebglRenderer({
-        canvas,
-        vertexSource: VERT_SRC,
-        fragmentSource: FRAG_SRC,
-    });
-} catch (error) {
-    document.body.textContent = 'WebGL2 not supported';
-    throw error;
-}
-
-const state = createInitialViewerState(elements, searchParams);
 let frameCounter = 0;
 let fpsWindowStart = performance.now();
 let fps = 0;
+
+function updateStatus(message = '') {
+    if (!renderer) {
+        elements.status.textContent = message;
+        return;
+    }
+
+    elements.status.textContent = buildStatusText({
+        state,
+        timing: renderer.getTiming(),
+        fps,
+        message,
+    });
+}
 
 function applyResolution() {
     syncInputsWithState(elements, state);
@@ -43,12 +44,6 @@ function applyResolution() {
     renderer.setViewport(state.width, state.height);
     updateStatus('canvas display size matches the render buffer');
 }
-
-// -- interaction --------------------------------------------------------------
-
-let dragging = false;
-let lastX = 0;
-let lastY = 0;
 
 function cssDeltaToBufferDelta(dx, dy) {
     const rect = canvas.getBoundingClientRect();
@@ -58,40 +53,35 @@ function cssDeltaToBufferDelta(dx, dy) {
     };
 }
 
-function updateStatus(message = '') {
-    elements.status.textContent = buildStatusText({
-        state,
-        timing: renderer.getTiming(),
-        fps,
-        message,
-    });
-}
+let dragging = false;
+let lastX = 0;
+let lastY = 0;
 
-canvas.addEventListener('mousedown', (e) => {
+canvas.addEventListener('mousedown', (event) => {
     dragging = true;
-    lastX = e.clientX;
-    lastY = e.clientY;
+    lastX = event.clientX;
+    lastY = event.clientY;
 });
 
 window.addEventListener('mouseup', () => {
     dragging = false;
 });
 
-window.addEventListener('mousemove', (e) => {
+window.addEventListener('mousemove', (event) => {
     if (!dragging) return;
-    const { dx, dy } = cssDeltaToBufferDelta(e.clientX - lastX, e.clientY - lastY);
+    const { dx, dy } = cssDeltaToBufferDelta(event.clientX - lastX, event.clientY - lastY);
     state.offsetX -= dx / state.scale;
     state.offsetY += dy / state.scale;
-    lastX = e.clientX;
-    lastY = e.clientY;
+    lastX = event.clientX;
+    lastY = event.clientY;
     updateStatus();
 });
 
 canvas.addEventListener(
     'wheel',
-    (e) => {
-        e.preventDefault();
-        const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    (event) => {
+        event.preventDefault();
+        const factor = event.deltaY < 0 ? 1.1 : 1 / 1.1;
         state.scale *= factor;
         updateStatus();
     },
@@ -133,13 +123,17 @@ for (const input of [elements.sinkItersInput, elements.dfsDepthInput, elements.d
     });
 }
 
-function render() {
-    renderer.render(state);
+async function buildCurrentFramePpm() {
+    const pixels = await renderer.readPixels(state);
+    return buildPpmFromRgba(state.width, state.height, pixels);
 }
 
-function renderOnce() {
-    renderer.renderOnce(state);
-}
+elements.exportPpmButton.addEventListener('click', async () => {
+    const ppm = await buildCurrentFramePpm();
+    const filename = `maskit-webgpu-${state.width}x${state.height}-mode${state.mode}.ppm`;
+    downloadPpm(ppm, filename);
+    updateStatus(`exported ${filename}`);
+});
 
 function getState() {
     return {
@@ -147,25 +141,6 @@ function getState() {
         ...renderer.getTiming(),
     };
 }
-
-function buildCurrentFramePpm() {
-    renderOnce();
-    return buildPpmFromRgba(
-        state.width,
-        state.height,
-        renderer.readPixels(state.width, state.height),
-    );
-}
-
-function exportCurrentFrameAsPpm() {
-    const ppm = buildCurrentFramePpm();
-    const filename = `maskit-${state.width}x${state.height}-mode${state.mode}.ppm`;
-    downloadPpm(ppm, filename);
-
-    updateStatus(`exported ${filename}`);
-}
-
-elements.exportPpmButton.addEventListener('click', exportCurrentFrameAsPpm);
 
 function setParams(params = {}) {
     if (typeof params.yReal === 'number') state.yReal = params.yReal;
@@ -188,14 +163,13 @@ window.__maskitTest = {
     setParams,
     renderOnce: async () => {
         const wallStart = performance.now();
-        renderOnce();
-        await renderer.waitForGpuTimer();
+        await renderer.renderOnce(state);
         return {
             ...getState(),
             wallRenderMs: performance.now() - wallStart,
         };
     },
-    exportPpm: () => buildCurrentFramePpm(),
+    exportPpm: async () => buildCurrentFramePpm(),
     getState,
     resetView: () => {
         state.offsetX = DEFAULT_VIEW.offsetX;
@@ -207,8 +181,7 @@ window.__maskitTest = {
 };
 
 function frame() {
-    render();
-    renderer.pollGpuTimer();
+    renderer.render(state);
     frameCounter += 1;
     const now = performance.now();
     const elapsed = now - fpsWindowStart;
@@ -221,9 +194,22 @@ function frame() {
     requestAnimationFrame(frame);
 }
 
-syncInputsWithState(elements, state);
-applyResolution();
-updateStatus('drag to pan, wheel to zoom');
-if (!isAutomation) {
-    requestAnimationFrame(frame);
+async function main() {
+    try {
+        renderer = await createWebgpuRenderer({ canvas });
+    } catch (error) {
+        document.body.textContent = 'WebGPU not supported';
+        throw error;
+    }
+
+    syncInputsWithState(elements, state);
+    applyResolution();
+    updateStatus('WebGPU preview ready');
+    if (!isAutomation) {
+        requestAnimationFrame(frame);
+    }
 }
+
+main().catch((error) => {
+    console.error(error);
+});

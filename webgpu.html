@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Maskit – BQ Viewer (WebGPU)</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      :root {
+        color-scheme: dark;
+        font-family: "Iosevka", "IBM Plex Sans", sans-serif;
+      }
+
+      body {
+        background:
+          radial-gradient(circle at top, rgba(33, 62, 92, 0.55), transparent 50%),
+          linear-gradient(180deg, #07111a 0%, #04070b 100%);
+        color: #e9eef5;
+        overflow: hidden;
+      }
+
+      .stage {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+
+      .hud {
+        position: fixed;
+        top: 16px;
+        left: 16px;
+        z-index: 2;
+        display: grid;
+        gap: 10px;
+        width: min(420px, calc(100vw - 32px));
+        padding: 14px;
+        border: 1px solid rgba(182, 214, 255, 0.18);
+        border-radius: 14px;
+        background: rgba(5, 10, 16, 0.76);
+        backdrop-filter: blur(12px);
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.32);
+      }
+
+      .hud__title {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .hud__title h1 {
+        font-size: 18px;
+        letter-spacing: 0.04em;
+      }
+
+      .hud__title p {
+        font-size: 12px;
+        color: #9ab1c9;
+      }
+
+      .hud__grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      label {
+        display: grid;
+        gap: 4px;
+        font-size: 12px;
+        color: #b8c6d8;
+      }
+
+      input,
+      select,
+      button {
+        appearance: none;
+        border: 1px solid rgba(191, 220, 255, 0.18);
+        border-radius: 10px;
+        background: rgba(15, 24, 34, 0.9);
+        color: inherit;
+        font: inherit;
+        padding: 9px 10px;
+      }
+
+      button {
+        cursor: pointer;
+        background: linear-gradient(180deg, rgba(36, 66, 96, 0.95), rgba(18, 38, 57, 0.95));
+      }
+
+      .hud__actions {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .hud__status {
+        min-height: 40px;
+        font-size: 12px;
+        line-height: 1.5;
+        color: #9ab1c9;
+        white-space: pre-line;
+      }
+
+      canvas {
+        display: block;
+        width: auto;
+        height: auto;
+        border: 1px solid rgba(182, 214, 255, 0.18);
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="hud">
+      <div class="hud__title">
+        <h1>Maskit BQ Viewer</h1>
+        <p>WebGPU preview</p>
+      </div>
+
+      <div class="hud__grid">
+        <label>
+          Mode
+          <select id="mode">
+            <option value="0">Coordinates</option>
+            <option value="1">z components</option>
+            <option value="2">|z|</option>
+            <option value="3">Discriminant</option>
+            <option value="4">H(x) branch</option>
+            <option value="5">Compare binary (bounded DFS)</option>
+          </select>
+        </label>
+
+        <label>
+          y.real
+          <input id="y-real" type="number" step="0.1" value="2" />
+        </label>
+
+        <label>
+          y.imag
+          <input id="y-imag" type="number" step="0.1" value="6" />
+        </label>
+
+        <label>
+          Render width
+          <input id="render-width" type="number" min="1" step="1" value="640" />
+        </label>
+
+        <label>
+          Render height
+          <input id="render-height" type="number" min="1" step="1" value="640" />
+        </label>
+
+        <label>
+          Sink iters
+          <input id="sink-iters" type="number" min="1" step="1" value="32" />
+        </label>
+
+        <label>
+          DFS depth
+          <input id="dfs-depth" type="number" min="1" step="1" value="96" />
+        </label>
+
+        <label>
+          DFS visits
+          <input id="dfs-visits" type="number" min="1" step="1" value="512" />
+        </label>
+      </div>
+
+      <div class="hud__actions">
+        <button id="apply-resolution" type="button">Apply Size</button>
+        <button id="reset-view" type="button">Reset View</button>
+        <button id="export-ppm" type="button">Export PPM</button>
+      </div>
+
+      <div id="status" class="hud__status"></div>
+    </section>
+    <div class="stage">
+      <canvas id="c" data-testid="render-canvas"></canvas>
+    </div>
+    <script type="module" src="/src/webgpu-main.js"></script>
+  </body>
+</html>

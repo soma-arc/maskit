@@ -1,0 +1,253 @@
+struct Uniforms {
+    resolution: vec2f,
+    offset: vec2f,
+    y: vec2f,
+    scale: f32,
+    mode: f32,
+    maxSinkIters: f32,
+    maxDfsDepth: f32,
+    maxDfsVisits: f32,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+const MAX_SINK_ITERS_LIMIT: i32 = 64;
+const MAX_DFS_DEPTH_LIMIT: i32 = 96;
+const MAX_DFS_STACK: i32 = 128;
+const MAX_DFS_VISITS_LIMIT: i32 = 512;
+
+fn c_mul(a: vec2f, b: vec2f) -> vec2f {
+    return vec2f(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+fn c_div(a: vec2f, b: vec2f) -> vec2f {
+    let denom = max(dot(b, b), 1e-6);
+    return vec2f(a.x * b.x + a.y * b.y, a.y * b.x - a.x * b.y) / denom;
+}
+
+fn c_abs2(z: vec2f) -> f32 {
+    return dot(z, z);
+}
+
+fn c_abs(z: vec2f) -> f32 {
+    return sqrt(c_abs2(z));
+}
+
+fn c_sqrt(z: vec2f) -> vec2f {
+    let r = length(z);
+    let realPart = sqrt(max(0.0, 0.5 * (r + z.x)));
+    var imagPart = sqrt(max(0.0, 0.5 * (r - z.x)));
+    if (z.y < 0.0) {
+        imagPart = -imagPart;
+    }
+    return vec2f(realPart, imagPart);
+}
+
+fn signed_to_unit(value: f32) -> f32 {
+    return 0.5 + 0.5 * (value / (1.0 + abs(value)));
+}
+
+fn heat(value: f32, exposure: f32) -> vec3f {
+    let t = clamp(1.0 - exp(-value * exposure), 0.0, 1.0);
+    return mix(vec3f(0.02, 0.05, 0.12), vec3f(0.92, 0.78, 0.34), vec3f(t * t));
+}
+
+fn h_bound(x: vec2f) -> f32 {
+    let xx = c_mul(x, x);
+    let root = c_sqrt(xx - vec2f(4.0, 0.0));
+    var lambdaAbs = c_abs(0.5 * (x + root));
+    lambdaAbs = max(lambdaAbs, 1.0 / max(lambdaAbs, 1e-6));
+    let prefactor = sqrt(c_abs(c_div(xx, xx - vec2f(4.0, 0.0))));
+    return prefactor * (2.0 * lambdaAbs * lambdaAbs) / max(lambdaAbs - 1.0, 1e-6);
+}
+
+fn bq_sink_to_local_minimum(a0: vec2f, b0: vec2f, c0: vec2f) -> array<vec2f, 4> {
+    var a = a0;
+    var b = b0;
+    var c = c0;
+    if (c_abs2(a) < 0.25 || c_abs2(b) < 0.25 || c_abs2(c) < 0.25) {
+        return array<vec2f, 4>(vec2f(-1.0), vec2f(0.0), vec2f(0.0), vec2f(0.0));
+    }
+
+    for (var iter = 0; iter < MAX_SINK_ITERS_LIMIT; iter += 1) {
+        if (iter >= i32(uniforms.maxSinkIters)) {
+            return array<vec2f, 4>(vec2f(1.0), a, b, c);
+        }
+
+        let A = c_mul(b, c) - a;
+        let B = c_mul(c, a) - b;
+        let C = c_mul(a, b) - c;
+
+        let absA2 = c_abs2(A);
+        let absB2 = c_abs2(B);
+        let absC2 = c_abs2(C);
+        let absa2 = c_abs2(a);
+        let absb2 = c_abs2(b);
+        let absc2 = c_abs2(c);
+
+        if (absA2 < 0.25 || absB2 < 0.25 || absC2 < 0.25) {
+            return array<vec2f, 4>(vec2f(-1.0), vec2f(0.0), vec2f(0.0), vec2f(0.0));
+        }
+
+        if (absA2 < absa2) {
+            a = A;
+            continue;
+        }
+        if (absB2 < absb2) {
+            b = B;
+            continue;
+        }
+        if (absC2 < absc2) {
+            c = C;
+            continue;
+        }
+
+        return array<vec2f, 4>(vec2f(1.0), a, b, c);
+    }
+
+    return array<vec2f, 4>(vec2f(1.0), a, b, c);
+}
+
+fn is_bq1_failure(z: vec2f) -> bool {
+    return abs(z.y) <= 1e-5 && z.x >= -2.0 && z.x <= 2.0;
+}
+
+fn bq_dfs_bounded(a0: vec2f, b0: vec2f, c0: vec2f) -> bool {
+    var stackA: array<vec2f, MAX_DFS_STACK>;
+    var stackB: array<vec2f, MAX_DFS_STACK>;
+    var stackC: array<vec2f, MAX_DFS_STACK>;
+    var stackDepth: array<i32, MAX_DFS_STACK>;
+
+    var stackSize = 1;
+    stackA[0] = a0;
+    stackB[0] = b0;
+    stackC[0] = c0;
+    stackDepth[0] = 0;
+
+    for (var visit = 0; visit < MAX_DFS_VISITS_LIMIT; visit += 1) {
+        if (visit >= i32(uniforms.maxDfsVisits)) {
+            return false;
+        }
+        if (stackSize <= 0) {
+            return true;
+        }
+
+        stackSize -= 1;
+
+        let a = stackA[stackSize];
+        let b = stackB[stackSize];
+        let c = stackC[stackSize];
+        let depth = stackDepth[stackSize];
+
+        if (depth > i32(uniforms.maxDfsDepth) || depth > MAX_DFS_DEPTH_LIMIT) {
+            return false;
+        }
+
+        if (is_bq1_failure(b) || is_bq1_failure(c)) {
+            return false;
+        }
+
+        let absb2 = c_abs2(b);
+        let absc2 = c_abs2(c);
+        let hBoundB = h_bound(b) + 1.0;
+        let hBoundC = h_bound(c) + 1.0;
+        let inTree = (absb2 <= 9.0 && absc2 <= hBoundB * hBoundB) ||
+            (absc2 <= 9.0 && absb2 <= hBoundC * hBoundC);
+        if (!inTree) {
+            continue;
+        }
+
+        let d = c_mul(b, c) - a;
+        if (c_abs2(d) < 0.25) {
+            return false;
+        }
+
+        if (stackSize + 2 > MAX_DFS_STACK) {
+            return false;
+        }
+
+        stackA[stackSize] = b;
+        stackB[stackSize] = c;
+        stackC[stackSize] = d;
+        stackDepth[stackSize] = depth + 1;
+        stackSize += 1;
+
+        stackA[stackSize] = c;
+        stackB[stackSize] = b;
+        stackC[stackSize] = d;
+        stackDepth[stackSize] = depth + 1;
+        stackSize += 1;
+    }
+
+    return stackSize <= 0;
+}
+
+fn bq_bounded(a: vec2f, b: vec2f, c: vec2f) -> bool {
+    let sink = bq_sink_to_local_minimum(a, b, c);
+    if (sink[0].x < 0.0) {
+        return false;
+    }
+
+    let sinkA = sink[1];
+    let sinkB = sink[2];
+    let sinkC = sink[3];
+
+    return bq_dfs_bounded(sinkA, sinkB, sinkC) &&
+        bq_dfs_bounded(sinkB, sinkC, sinkA) &&
+        bq_dfs_bounded(sinkC, sinkB, sinkA);
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+    var positions = array<vec2f, 3>(
+        vec2f(-1.0, -3.0),
+        vec2f(-1.0, 1.0),
+        vec2f(3.0, 1.0),
+    );
+
+    var output: VertexOutput;
+    output.position = vec4f(positions[vertexIndex], 0.0, 1.0);
+    return output;
+}
+
+@fragment
+fn fs_main(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
+    let x = (fragCoord.xy - uniforms.resolution * 0.5) / uniforms.scale + uniforms.offset;
+    let y = uniforms.y;
+
+    let xx = c_mul(x, x);
+    let yy = c_mul(y, y);
+    let xy = c_mul(x, y);
+    let discriminant = c_mul(xy, xy) - 4.0 * (xx + yy);
+    let z = 0.5 * (xy + c_sqrt(discriminant));
+
+    let mode = i32(uniforms.mode);
+    var color = vec3f(0.0);
+
+    if (mode == 0) {
+        let grid = abs(fract(x) - vec2f(0.5));
+        let line = 1.0 - smoothstep(0.45, 0.5, min(grid.x, grid.y));
+        color = mix(
+            vec3f(fract(x.x * 0.125), fract(x.y * 0.125), 0.18),
+            vec3f(0.92, 0.94, 0.98),
+            vec3f(line * 0.35),
+        );
+    } else if (mode == 1) {
+        color = vec3f(signed_to_unit(z.x), signed_to_unit(z.y), 0.18);
+    } else if (mode == 2) {
+        color = heat(c_abs(z), 0.08);
+    } else if (mode == 3) {
+        color = heat(c_abs(discriminant), 0.015);
+    } else if (mode == 4) {
+        color = heat(h_bound(x), 0.01);
+    } else {
+        let isBqLike = bq_bounded(x, y, z);
+        color = select(vec3f(1.0), vec3f(0.0), isBqLike);
+    }
+
+    return vec4f(color, 1.0);
+}

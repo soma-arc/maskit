@@ -18,6 +18,7 @@ async function main() {
   const maxSinkIters = parseOptionalNumber(args[6], undefined);
   const maxDfsDepth = parseOptionalNumber(args[7], undefined);
   const maxDfsVisits = parseOptionalNumber(args[8], undefined);
+  const pagePath = args[9] || '/';
 
   const rendered = await renderWithBrowser({
     outputPath,
@@ -27,6 +28,7 @@ async function main() {
     maxSinkIters,
     maxDfsDepth,
     maxDfsVisits,
+    pagePath,
     returnState: true,
   });
   const summary = compareNetpbmFiles(referencePath, rendered.outputPath, compareDir);
