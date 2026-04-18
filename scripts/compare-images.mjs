@@ -161,6 +161,18 @@ export function buildDiffPpm(width, height, referenceMask, candidateMask) {
   return `${lines.join('\n')}\n`;
 }
 
+export function buildMaskP1(width, height, mask) {
+  const lines = ['P1', `${width} ${height}`];
+  for (let y = 0; y < height; y += 1) {
+    const row = [];
+    for (let x = 0; x < width; x += 1) {
+      row.push(String(mask[y * width + x]));
+    }
+    lines.push(row.join(' '));
+  }
+  return `${lines.join('\n')}\n`;
+}
+
 export function compareNetpbmFiles(referencePath, candidatePath, outputDir = 'out/compare') {
   if (!referencePath || !candidatePath) {
     fail('Usage: node scripts/compare-images.mjs <reference.ppm> <candidate.ppm> [outputDir]');

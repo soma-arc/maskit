@@ -124,6 +124,7 @@ export async function renderWithBrowser({
   unknownSampleLimit = 64,
   includeDiagnostics = false,
   returnState = false,
+  includeAllUnknownPixels = false,
 } = {}) {
   if (!fs.existsSync(path.join(distDir, 'index.html'))) {
     fail('dist/index.html がありません。先に pnpm build を実行してください。');
@@ -171,11 +172,18 @@ export async function renderWithBrowser({
         params.includeDiagnostics && typeof window.__maskitTest.getUnknownPixelIndices === 'function'
           ? await window.__maskitTest.getUnknownPixelIndices(params.unknownSampleLimit)
           : null;
+      const allUnknownPixels =
+        params.includeAllUnknownPixels &&
+        classificationStats &&
+        typeof window.__maskitTest.getUnknownPixelIndices === 'function'
+          ? await window.__maskitTest.getUnknownPixelIndices(classificationStats.unknownCount)
+          : null;
       return {
         ppm: await window.__maskitTest.exportPpm(),
         state,
         classificationStats,
         unknownSample,
+        allUnknownPixels,
       };
     }, {
       width,
@@ -190,6 +198,7 @@ export async function renderWithBrowser({
       maxDfsDepth,
       maxDfsVisits,
       includeDiagnostics,
+      includeAllUnknownPixels,
       unknownSampleLimit,
     });
 
@@ -201,6 +210,7 @@ export async function renderWithBrowser({
           state: result.state,
           classificationStats: result.classificationStats,
           unknownSample: result.unknownSample,
+          allUnknownPixels: result.allUnknownPixels,
         }
       : outputPath;
   } finally {

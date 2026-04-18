@@ -1,7 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { compareNetpbmFiles, fail } from './compare-images.mjs';
+import {
+  buildDiffPpm,
+  buildMaskP1,
+  compareMasks,
+  compareNetpbmFiles,
+  fail,
+  readAsciiNetpbm,
+  toBinaryMask,
+} from './compare-images.mjs';
+import { refineUnknownMask } from './bq-cpu.mjs';
 import { renderWithBrowser } from './render-with-browser.mjs';
 
 function parseOptionalNumber(value, fallback) {
@@ -39,6 +48,10 @@ function appendJsonLine(filePath, payload) {
   fs.appendFileSync(filePath, `${JSON.stringify(payload)}\n`);
 }
 
+function shouldApplyCpuRefinement(pagePath) {
+  return pagePath === '/webgpu.html' && process.env.MASKIT_CPU_REFINE !== '0';
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const referencePath = args[0] || 'img.ppm';
@@ -62,11 +75,59 @@ async function main() {
     maxDfsDepth,
     maxDfsVisits,
     includeDiagnostics: true,
+    includeAllUnknownPixels: shouldApplyCpuRefinement(pagePath),
     unknownSampleLimit,
     pagePath,
     returnState: true,
   });
-  const summary = compareNetpbmFiles(referencePath, rendered.outputPath, compareDir);
+  let summary;
+  let comparedOutputPath = rendered.outputPath;
+  let cpuRefinement = null;
+
+  if (
+    shouldApplyCpuRefinement(pagePath) &&
+    rendered.allUnknownPixels &&
+    rendered.allUnknownPixels.returnedCount > 0
+  ) {
+    const reference = readAsciiNetpbm(referencePath);
+    const candidate = readAsciiNetpbm(rendered.outputPath);
+    const referenceMask = toBinaryMask(reference);
+    const candidateMask = toBinaryMask(candidate);
+    const refined = refineUnknownMask(rendered.state, candidateMask, rendered.allUnknownPixels.indices, {
+      maxSinkIters: 8192,
+      maxDepth: 4096,
+      maxVisits: 4_000_000,
+    });
+
+    comparedOutputPath = path.join(compareDir, 'cpu-refined.pbm');
+    ensureDir(compareDir);
+    fs.writeFileSync(comparedOutputPath, buildMaskP1(reference.width, reference.height, refined.refinedMask));
+
+    const compared = compareMasks(referenceMask, refined.refinedMask);
+    const summaryPath = path.join(compareDir, 'summary.json');
+    const diffPath = path.join(compareDir, 'diff.ppm');
+    fs.writeFileSync(summaryPath, `${JSON.stringify(compared, null, 2)}\n`);
+    fs.writeFileSync(diffPath, buildDiffPpm(reference.width, reference.height, referenceMask, refined.refinedMask));
+    summary = { summaryPath, diffPath, ...compared };
+    cpuRefinement = {
+      applied: true,
+      refinedOutputPath: comparedOutputPath,
+      unresolvedInputCount: rendered.allUnknownPixels.unknownCount,
+      refinedPixelCount: refined.resolvedCount,
+      resolvedTrue: refined.resolvedTrue,
+      resolvedFalse: refined.resolvedFalse,
+    };
+  } else {
+    summary = compareNetpbmFiles(referencePath, rendered.outputPath, compareDir);
+    cpuRefinement = {
+      applied: false,
+      refinedOutputPath: null,
+      unresolvedInputCount: rendered.allUnknownPixels?.unknownCount ?? 0,
+      refinedPixelCount: 0,
+      resolvedTrue: 0,
+      resolvedFalse: 0,
+    };
+  }
   const statsPath = path.join(compareDir, 'stats.json');
   const unknownSamplePath = path.join(compareDir, 'unknown-sample.json');
   const historyDir = path.join('out', 'history');
@@ -94,6 +155,7 @@ async function main() {
     gitSha: getGitSha(),
     referencePath,
     outputPath: rendered.outputPath,
+    comparedOutputPath,
     compareDir,
     pagePath,
     params: {
@@ -109,11 +171,13 @@ async function main() {
     renderState: rendered.state,
     classificationStats: rendered.classificationStats,
     unknownSample: rendered.unknownSample,
+    cpuRefinement,
     artifacts: {
       summaryPath: summary.summaryPath,
       diffPath: summary.diffPath,
       statsPath: statsPayload ? statsPath : null,
       unknownSamplePath: rendered.unknownSample ? unknownSamplePath : null,
+      comparedOutputPath,
     },
   };
   writeJsonFile(historyPath, historyEntry);
@@ -129,6 +193,8 @@ async function main() {
     mismatches: historyEntry.summary.mismatches,
     falsePositive: historyEntry.summary.falsePositive,
     falseNegative: historyEntry.summary.falseNegative,
+    cpuRefinementApplied: historyEntry.cpuRefinement?.applied ?? false,
+    refinedPixelCount: historyEntry.cpuRefinement?.refinedPixelCount ?? 0,
     statsPath: historyEntry.artifacts.statsPath,
     unknownSamplePath: historyEntry.artifacts.unknownSamplePath,
     historyPath,
@@ -145,6 +211,7 @@ async function main() {
         unknownSamplePath: rendered.unknownSample ? unknownSamplePath : null,
         classificationStats: rendered.classificationStats,
         unknownSample: rendered.unknownSample,
+        cpuRefinement,
       },
       null,
       2,
