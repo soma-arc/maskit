@@ -19,7 +19,7 @@ struct ComputedSample {
     y: vec2f,
     z: vec2f,
     discriminant: vec2f,
-    isBqLike: bool,
+    statusCode: f32,
 };
 
 struct BlitVertexOutput {
@@ -38,6 +38,9 @@ const MAX_SINK_ITERS_LIMIT: i32 = 64;
 const MAX_DFS_DEPTH_LIMIT: i32 = 96;
 const MAX_DFS_STACK: i32 = 128;
 const MAX_DFS_VISITS_LIMIT: i32 = 512;
+const BQ_FALSE: i32 = 0;
+const BQ_TRUE: i32 = 1;
+const BQ_UNKNOWN: i32 = 2;
 
 fn c_mul(a: vec2f, b: vec2f) -> vec2f {
     return vec2f(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
@@ -89,12 +92,12 @@ fn bq_sink_to_local_minimum(a0: vec2f, b0: vec2f, c0: vec2f) -> array<vec2f, 4> 
     var b = b0;
     var c = c0;
     if (c_abs2(a) < 0.25 || c_abs2(b) < 0.25 || c_abs2(c) < 0.25) {
-        return array<vec2f, 4>(vec2f(-1.0), vec2f(0.0), vec2f(0.0), vec2f(0.0));
+        return array<vec2f, 4>(vec2f(f32(BQ_FALSE), 0.0), vec2f(0.0), vec2f(0.0), vec2f(0.0));
     }
 
     for (var iter = 0; iter < MAX_SINK_ITERS_LIMIT; iter += 1) {
         if (iter >= i32(uniforms.maxSinkIters)) {
-            return array<vec2f, 4>(vec2f(1.0), a, b, c);
+            return array<vec2f, 4>(vec2f(f32(BQ_UNKNOWN), 0.0), a, b, c);
         }
 
         let A = c_mul(b, c) - a;
@@ -109,7 +112,7 @@ fn bq_sink_to_local_minimum(a0: vec2f, b0: vec2f, c0: vec2f) -> array<vec2f, 4> 
         let absc2 = c_abs2(c);
 
         if (absA2 < 0.25 || absB2 < 0.25 || absC2 < 0.25) {
-            return array<vec2f, 4>(vec2f(-1.0), vec2f(0.0), vec2f(0.0), vec2f(0.0));
+            return array<vec2f, 4>(vec2f(f32(BQ_FALSE), 0.0), vec2f(0.0), vec2f(0.0), vec2f(0.0));
         }
 
         if (absA2 < absa2) {
@@ -125,17 +128,17 @@ fn bq_sink_to_local_minimum(a0: vec2f, b0: vec2f, c0: vec2f) -> array<vec2f, 4> 
             continue;
         }
 
-        return array<vec2f, 4>(vec2f(1.0), a, b, c);
+        return array<vec2f, 4>(vec2f(f32(BQ_TRUE), 0.0), a, b, c);
     }
 
-    return array<vec2f, 4>(vec2f(1.0), a, b, c);
+    return array<vec2f, 4>(vec2f(f32(BQ_UNKNOWN), 0.0), a, b, c);
 }
 
 fn is_bq1_failure(z: vec2f) -> bool {
     return abs(z.y) <= 1e-5 && z.x >= -2.0 && z.x <= 2.0;
 }
 
-fn bq_dfs_bounded(a0: vec2f, b0: vec2f, c0: vec2f) -> bool {
+fn bq_dfs_bounded_result(a0: vec2f, b0: vec2f, c0: vec2f) -> i32 {
     var stackA: array<vec2f, MAX_DFS_STACK>;
     var stackB: array<vec2f, MAX_DFS_STACK>;
     var stackC: array<vec2f, MAX_DFS_STACK>;
@@ -149,10 +152,10 @@ fn bq_dfs_bounded(a0: vec2f, b0: vec2f, c0: vec2f) -> bool {
 
     for (var visit = 0; visit < MAX_DFS_VISITS_LIMIT; visit += 1) {
         if (visit >= i32(uniforms.maxDfsVisits)) {
-            return false;
+            return BQ_UNKNOWN;
         }
         if (stackSize <= 0) {
-            return true;
+            return BQ_TRUE;
         }
 
         stackSize -= 1;
@@ -163,11 +166,11 @@ fn bq_dfs_bounded(a0: vec2f, b0: vec2f, c0: vec2f) -> bool {
         let depth = stackDepth[stackSize];
 
         if (depth > i32(uniforms.maxDfsDepth) || depth > MAX_DFS_DEPTH_LIMIT) {
-            return false;
+            return BQ_UNKNOWN;
         }
 
         if (is_bq1_failure(b) || is_bq1_failure(c)) {
-            return false;
+            return BQ_FALSE;
         }
 
         let absb2 = c_abs2(b);
@@ -182,11 +185,11 @@ fn bq_dfs_bounded(a0: vec2f, b0: vec2f, c0: vec2f) -> bool {
 
         let d = c_mul(b, c) - a;
         if (c_abs2(d) < 0.25) {
-            return false;
+            return BQ_FALSE;
         }
 
         if (stackSize + 2 > MAX_DFS_STACK) {
-            return false;
+            return BQ_UNKNOWN;
         }
 
         stackA[stackSize] = b;
@@ -202,22 +205,34 @@ fn bq_dfs_bounded(a0: vec2f, b0: vec2f, c0: vec2f) -> bool {
         stackSize += 1;
     }
 
-    return stackSize <= 0;
+    return select(BQ_UNKNOWN, BQ_TRUE, stackSize <= 0);
 }
 
-fn bq_bounded(a: vec2f, b: vec2f, c: vec2f) -> bool {
+fn bq_bounded_result(a: vec2f, b: vec2f, c: vec2f) -> i32 {
     let sink = bq_sink_to_local_minimum(a, b, c);
-    if (sink[0].x < 0.0) {
-        return false;
+    let sinkStatus = i32(sink[0].x);
+    if (sinkStatus == BQ_FALSE) {
+        return BQ_FALSE;
+    }
+    if (sinkStatus == BQ_UNKNOWN) {
+        return BQ_UNKNOWN;
     }
 
     let sinkA = sink[1];
     let sinkB = sink[2];
     let sinkC = sink[3];
 
-    return bq_dfs_bounded(sinkA, sinkB, sinkC) &&
-        bq_dfs_bounded(sinkB, sinkC, sinkA) &&
-        bq_dfs_bounded(sinkC, sinkB, sinkA);
+    let result1 = bq_dfs_bounded_result(sinkA, sinkB, sinkC);
+    let result2 = bq_dfs_bounded_result(sinkB, sinkC, sinkA);
+    let result3 = bq_dfs_bounded_result(sinkC, sinkB, sinkA);
+
+    if (result1 == BQ_FALSE || result2 == BQ_FALSE || result3 == BQ_FALSE) {
+        return BQ_FALSE;
+    }
+    if (result1 == BQ_UNKNOWN || result2 == BQ_UNKNOWN || result3 == BQ_UNKNOWN) {
+        return BQ_UNKNOWN;
+    }
+    return BQ_TRUE;
 }
 
 fn computeSample(fragCoord: vec2f) -> ComputedSample {
@@ -230,7 +245,7 @@ fn computeSample(fragCoord: vec2f) -> ComputedSample {
     let discriminant = c_mul(xy, xy) - 4.0 * (xx + yy);
     let z = 0.5 * (xy + c_sqrt(discriminant));
 
-    return ComputedSample(x, y, z, discriminant, bq_bounded(x, y, z));
+    return ComputedSample(x, y, z, discriminant, f32(bq_bounded_result(x, y, z)));
 }
 
 fn computeColor(sample: ComputedSample) -> vec4f {
@@ -258,7 +273,7 @@ fn computeColor(sample: ComputedSample) -> vec4f {
     } else if (mode == 4) {
         color = heat(h_bound(x), 0.01);
     } else {
-        color = select(vec3f(1.0), vec3f(0.0), sample.isBqLike);
+        color = select(vec3f(1.0), vec3f(0.0), sample.statusCode == f32(BQ_TRUE));
     }
 
     return vec4f(color, 1.0);
@@ -267,7 +282,7 @@ fn computeColor(sample: ComputedSample) -> vec4f {
 fn buildPixelState(sample: ComputedSample) -> PixelState {
     return PixelState(
         vec4f(sample.x, sample.y),
-        vec4f(sample.z, select(0.0, 1.0, sample.isBqLike), 0.0),
+        vec4f(sample.z, sample.statusCode, 0.0),
     );
 }
 
