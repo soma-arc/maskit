@@ -121,6 +121,8 @@ export async function renderWithBrowser({
   maxSinkIters,
   maxDfsDepth,
   maxDfsVisits,
+  unknownSampleLimit = 64,
+  includeDiagnostics = false,
   returnState = false,
 } = {}) {
   if (!fs.existsSync(path.join(distDir, 'index.html'))) {
@@ -161,9 +163,19 @@ export async function renderWithBrowser({
     const result = await page.evaluate(async (params) => {
       window.__maskitTest.setParams(params);
       const state = await window.__maskitTest.renderOnce();
+      const classificationStats =
+        params.includeDiagnostics && typeof window.__maskitTest.getClassificationStats === 'function'
+          ? await window.__maskitTest.getClassificationStats()
+          : null;
+      const unknownSample =
+        params.includeDiagnostics && typeof window.__maskitTest.getUnknownPixelIndices === 'function'
+          ? await window.__maskitTest.getUnknownPixelIndices(params.unknownSampleLimit)
+          : null;
       return {
         ppm: await window.__maskitTest.exportPpm(),
         state,
+        classificationStats,
+        unknownSample,
       };
     }, {
       width,
@@ -177,11 +189,20 @@ export async function renderWithBrowser({
       maxSinkIters,
       maxDfsDepth,
       maxDfsVisits,
+      includeDiagnostics,
+      unknownSampleLimit,
     });
 
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, result.ppm);
-    return returnState ? { outputPath, state: result.state } : outputPath;
+    return returnState
+      ? {
+          outputPath,
+          state: result.state,
+          classificationStats: result.classificationStats,
+          unknownSample: result.unknownSample,
+        }
+      : outputPath;
   } finally {
     await cleanupController.cleanup();
   }

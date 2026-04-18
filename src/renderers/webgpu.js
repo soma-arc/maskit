@@ -6,10 +6,9 @@ const WORKGROUP_SIZE = 8;
 const OUTPUT_TEXTURE_FORMAT = 'rgba8unorm';
 const PIXEL_STATE_FLOAT_COUNT = 8;
 const PIXEL_STATE_STRIDE = PIXEL_STATE_FLOAT_COUNT * Float32Array.BYTES_PER_ELEMENT;
-const CLASSIFICATION_STATS_UINT_COUNT = 4;
+const CLASSIFICATION_STATS_UINT_COUNT = 8;
 const CLASSIFICATION_STATS_BUFFER_SIZE =
     CLASSIFICATION_STATS_UINT_COUNT * Uint32Array.BYTES_PER_ELEMENT;
-const EMPTY_CLASSIFICATION_STATS = new Uint32Array(CLASSIFICATION_STATS_UINT_COUNT);
 const UNKNOWN_INDEX_STRIDE = Uint32Array.BYTES_PER_ELEMENT;
 
 function assertWebgpu() {
@@ -43,11 +42,60 @@ export async function createWebgpuRenderer({ canvas }) {
     });
 
     const shaderModule = device.createShaderModule({ code: SHADER_SOURCE });
-    const computePipeline = device.createComputePipeline({
-        layout: 'auto',
+    const computeBindGroupLayout = device.createBindGroupLayout({
+        entries: [
+            {
+                binding: 0,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: 'uniform' },
+            },
+            {
+                binding: 1,
+                visibility: GPUShaderStage.COMPUTE,
+                storageTexture: {
+                    access: 'write-only',
+                    format: OUTPUT_TEXTURE_FORMAT,
+                },
+            },
+            {
+                binding: 2,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: 'storage' },
+            },
+            {
+                binding: 3,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: 'storage' },
+            },
+            {
+                binding: 4,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: 'storage' },
+            },
+        ],
+    });
+    const computePipelineLayout = device.createPipelineLayout({
+        bindGroupLayouts: [computeBindGroupLayout],
+    });
+    const classifyPipeline = device.createComputePipeline({
+        layout: computePipelineLayout,
         compute: {
             module: shaderModule,
-            entryPoint: 'cs_main',
+            entryPoint: 'cs_classify_main',
+        },
+    });
+    const refineUnknownPipeline = device.createComputePipeline({
+        layout: computePipelineLayout,
+        compute: {
+            module: shaderModule,
+            entryPoint: 'cs_refine_unknown_main',
+        },
+    });
+    const finalizePipeline = device.createComputePipeline({
+        layout: computePipelineLayout,
+        compute: {
+            module: shaderModule,
+            entryPoint: 'cs_finalize_main',
         },
     });
     const blitPipeline = device.createRenderPipeline({
@@ -126,7 +174,7 @@ export async function createWebgpuRenderer({ canvas }) {
         });
 
         computeBindGroup = device.createBindGroup({
-            layout: computePipeline.getBindGroupLayout(0),
+            layout: computeBindGroupLayout,
             entries: [
                 { binding: 0, resource: { buffer: uniformBuffer } },
                 { binding: 1, resource: outputTextureView },
@@ -167,9 +215,28 @@ export async function createWebgpuRenderer({ canvas }) {
         device.queue.writeBuffer(uniformBuffer, 0, uniformData);
     }
 
-    function encodeComputePass(encoder, state) {
+    function encodeClassificationPass(encoder, state) {
         const computePass = encoder.beginComputePass();
-        computePass.setPipeline(computePipeline);
+        computePass.setPipeline(classifyPipeline);
+        computePass.setBindGroup(0, computeBindGroup);
+        computePass.dispatchWorkgroups(
+            Math.ceil(state.width / WORKGROUP_SIZE),
+            Math.ceil(state.height / WORKGROUP_SIZE),
+        );
+        computePass.end();
+    }
+
+    function encodeUnknownRefinementPass(encoder, state) {
+        const computePass = encoder.beginComputePass();
+        computePass.setPipeline(refineUnknownPipeline);
+        computePass.setBindGroup(0, computeBindGroup);
+        computePass.dispatchWorkgroups(Math.ceil((state.width * state.height) / 64));
+        computePass.end();
+    }
+
+    function encodeFinalizePass(encoder, state) {
+        const computePass = encoder.beginComputePass();
+        computePass.setPipeline(finalizePipeline);
         computePass.setBindGroup(0, computeBindGroup);
         computePass.dispatchWorkgroups(
             Math.ceil(state.width / WORKGROUP_SIZE),
@@ -198,10 +265,13 @@ export async function createWebgpuRenderer({ canvas }) {
     function submitRender(state, { presentToCanvas = true, copyBuffer = null } = {}) {
         ensureConfigured(state.width, state.height);
         writeUniforms(state);
-        device.queue.writeBuffer(classificationStatsBuffer, 0, EMPTY_CLASSIFICATION_STATS);
 
         const encoder = device.createCommandEncoder();
-        encodeComputePass(encoder, state);
+        encoder.clearBuffer(classificationStatsBuffer);
+        encodeClassificationPass(encoder, state);
+        encodeUnknownRefinementPass(encoder, state);
+        encoder.clearBuffer(classificationStatsBuffer);
+        encodeFinalizePass(encoder, state);
 
         if (presentToCanvas) {
             encodeBlitPass(encoder, context.getCurrentTexture().createView());
@@ -283,10 +353,13 @@ export async function createWebgpuRenderer({ canvas }) {
             usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
         });
 
-        writeUniforms(state);
-        device.queue.writeBuffer(classificationStatsBuffer, 0, EMPTY_CLASSIFICATION_STATS);
         const encoder = device.createCommandEncoder();
-        encodeComputePass(encoder, state);
+        writeUniforms(state);
+        encoder.clearBuffer(classificationStatsBuffer);
+        encodeClassificationPass(encoder, state);
+        encodeUnknownRefinementPass(encoder, state);
+        encoder.clearBuffer(classificationStatsBuffer);
+        encodeFinalizePass(encoder, state);
         encoder.copyBufferToBuffer(pixelStateBuffer, offset, outputBuffer, 0, PIXEL_STATE_STRIDE);
         device.queue.submit([encoder.finish()]);
 
@@ -316,7 +389,7 @@ export async function createWebgpuRenderer({ canvas }) {
             z: { real: values[4], imag: values[5] },
             statusCode,
             statusName,
-            isBqLike: statusCode === 1 || statusCode === 3,
+            isBqLike: statusCode !== 0,
             reserved: values[7],
         };
     }
@@ -329,11 +402,13 @@ export async function createWebgpuRenderer({ canvas }) {
             usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
         });
 
-        writeUniforms(state);
-        device.queue.writeBuffer(classificationStatsBuffer, 0, EMPTY_CLASSIFICATION_STATS);
-
         const encoder = device.createCommandEncoder();
-        encodeComputePass(encoder, state);
+        writeUniforms(state);
+        encoder.clearBuffer(classificationStatsBuffer);
+        encodeClassificationPass(encoder, state);
+        encodeUnknownRefinementPass(encoder, state);
+        encoder.clearBuffer(classificationStatsBuffer);
+        encodeFinalizePass(encoder, state);
         encoder.copyBufferToBuffer(
             classificationStatsBuffer,
             0,
@@ -354,6 +429,9 @@ export async function createWebgpuRenderer({ canvas }) {
             falseCount: values[0],
             trueCount: values[1],
             unknownCount: values[2],
+            unknownSinkCount: values[3],
+            unknownDfsLimitCount: values[4],
+            unknownStackCount: values[5],
             totalCount: values[0] + values[1] + values[2],
         };
     }
@@ -370,11 +448,13 @@ export async function createWebgpuRenderer({ canvas }) {
             usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
         });
 
-        writeUniforms(state);
-        device.queue.writeBuffer(classificationStatsBuffer, 0, EMPTY_CLASSIFICATION_STATS);
-
         const encoder = device.createCommandEncoder();
-        encodeComputePass(encoder, state);
+        writeUniforms(state);
+        encoder.clearBuffer(classificationStatsBuffer);
+        encodeClassificationPass(encoder, state);
+        encodeUnknownRefinementPass(encoder, state);
+        encoder.clearBuffer(classificationStatsBuffer);
+        encodeFinalizePass(encoder, state);
         encoder.copyBufferToBuffer(
             classificationStatsBuffer,
             0,

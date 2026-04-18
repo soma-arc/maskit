@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { compareNetpbmFiles, fail } from './compare-images.mjs';
 import { renderWithBrowser } from './render-with-browser.mjs';
 
@@ -19,6 +21,7 @@ async function main() {
   const maxDfsDepth = parseOptionalNumber(args[7], undefined);
   const maxDfsVisits = parseOptionalNumber(args[8], undefined);
   const pagePath = args[9] || '/';
+  const unknownSampleLimit = parseOptionalNumber(args[10], 64);
 
   const rendered = await renderWithBrowser({
     outputPath,
@@ -28,11 +31,41 @@ async function main() {
     maxSinkIters,
     maxDfsDepth,
     maxDfsVisits,
+    includeDiagnostics: true,
+    unknownSampleLimit,
     pagePath,
     returnState: true,
   });
   const summary = compareNetpbmFiles(referencePath, rendered.outputPath, compareDir);
-  console.log(JSON.stringify({ ...summary, renderState: rendered.state }, null, 2));
+  const statsPath = path.join(compareDir, 'stats.json');
+  const unknownSamplePath = path.join(compareDir, 'unknown-sample.json');
+  const statsPayload = rendered.classificationStats
+    ? {
+        ...rendered.classificationStats,
+        renderState: rendered.state,
+      }
+    : null;
+  if (statsPayload) {
+    fs.writeFileSync(statsPath, `${JSON.stringify(statsPayload, null, 2)}\n`);
+  }
+  if (rendered.unknownSample) {
+    fs.writeFileSync(unknownSamplePath, `${JSON.stringify(rendered.unknownSample, null, 2)}\n`);
+  }
+
+  console.log(
+    JSON.stringify(
+      {
+        ...summary,
+        renderState: rendered.state,
+        statsPath: statsPayload ? statsPath : null,
+        unknownSamplePath: rendered.unknownSample ? unknownSamplePath : null,
+        classificationStats: rendered.classificationStats,
+        unknownSample: rendered.unknownSample,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 main().catch((error) => fail(error instanceof Error ? error.stack || error.message : String(error)));

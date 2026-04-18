@@ -116,10 +116,10 @@ for (const input of [elements.yRealInput, elements.yImagInput]) {
 for (const input of [elements.sinkItersInput, elements.dfsDepthInput, elements.dfsVisitsInput]) {
     input.addEventListener('input', () => {
         state.maxSinkIters = Math.max(1, Number.parseInt(elements.sinkItersInput.value, 10) || 64);
-        state.maxDfsDepth = Math.max(1, Number.parseInt(elements.dfsDepthInput.value, 10) || 192);
+        state.maxDfsDepth = Math.max(1, Number.parseInt(elements.dfsDepthInput.value, 10) || 320);
         state.maxDfsVisits = Math.max(
             1,
-            Number.parseInt(elements.dfsVisitsInput.value, 10) || 2048,
+            Number.parseInt(elements.dfsVisitsInput.value, 10) || 8192,
         );
         syncInputsWithState(elements, state);
         updateStatus();

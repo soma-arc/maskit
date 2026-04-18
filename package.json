@@ -12,7 +12,7 @@
     "compare:browser": "node scripts/compare-with-browser.mjs",
     "render:webgpu:browser": "node scripts/render-with-browser.mjs out/render/webgpu-preview.ppm 320 320 0 /webgpu.html",
     "render:webgpu:ref": "node scripts/render-with-browser.mjs out/render/webgpu-reference.ppm 320 320 5 /webgpu.html",
-    "compare:webgpu:ref": "node scripts/compare-with-browser.mjs img.ppm out/render/webgpu-reference.ppm out/compare/webgpu-reference 5 320 320 64 192 2048 /webgpu.html",
+    "compare:webgpu:ref": "node scripts/compare-with-browser.mjs img.ppm out/render/webgpu-reference.ppm out/compare/webgpu-reference 5 320 320 64 320 8192 /webgpu.html",
     "render:ref": "node scripts/render-with-browser.mjs out/render/reference.ppm 320 320 5",
     "compare:ref": "node scripts/compare-with-browser.mjs img.ppm out/render/reference.ppm out/compare/reference 5 320 320 32 96 512",
     "render:ref:640": "node scripts/render-with-browser.mjs out/render/reference-640.ppm 640 640 5",

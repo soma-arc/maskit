@@ -26,7 +26,11 @@ struct ClassificationStats {
     falseCount: atomic<u32>,
     trueCount: atomic<u32>,
     unknownCount: atomic<u32>,
-    padding: u32,
+    unknownSinkCount: atomic<u32>,
+    unknownDfsLimitCount: atomic<u32>,
+    unknownStackCount: atomic<u32>,
+    padding0: u32,
+    padding1: u32,
 };
 
 struct BlitVertexOutput {
@@ -44,9 +48,11 @@ struct BlitVertexOutput {
 @group(1) @binding(1) var outputTextureForSampling: texture_2d<f32>;
 
 const MAX_SINK_ITERS_LIMIT: i32 = 64;
-const MAX_DFS_DEPTH_LIMIT: i32 = 192;
-const MAX_DFS_STACK: i32 = 192;
-const MAX_DFS_VISITS_LIMIT: i32 = 2048;
+const MAX_DFS_DEPTH_LIMIT: i32 = 384;
+const MAX_DFS_STACK: i32 = 384;
+const MAX_DFS_VISITS_LIMIT: i32 = 32768;
+const REFINEMENT_DFS_DEPTH_LIMIT: i32 = 384;
+const REFINEMENT_DFS_VISITS_LIMIT: i32 = 32768;
 const BQ_FALSE: i32 = 0;
 const BQ_TRUE: i32 = 1;
 const BQ_UNKNOWN_SINK: i32 = 2;
@@ -108,6 +114,16 @@ fn initial_dfs_depth_limit() -> i32 {
 
 fn initial_dfs_visits_limit() -> i32 {
     return clamp(i32(uniforms.maxDfsVisits), 1, MAX_DFS_VISITS_LIMIT);
+}
+
+fn refinement_dfs_depth_limit() -> i32 {
+    let base = max(i32(uniforms.maxDfsDepth), 1);
+    return clamp(max(base * 2, base + 64), 1, REFINEMENT_DFS_DEPTH_LIMIT);
+}
+
+fn refinement_dfs_visits_limit() -> i32 {
+    let base = max(i32(uniforms.maxDfsVisits), 1);
+    return clamp(max(base * 4, base + 4096), 1, REFINEMENT_DFS_VISITS_LIMIT);
 }
 
 fn bq_sink_to_local_minimum(
@@ -316,10 +332,15 @@ fn computeSample(fragCoord: vec2f) -> ComputedSample {
 }
 
 fn computeColor(sample: ComputedSample) -> vec4f {
-    let x = sample.x;
-    let z = sample.z;
-    let discriminant = sample.discriminant;
+    return computeColorFromStatus(i32(sample.statusCode), sample.x, sample.z, sample.discriminant);
+}
 
+fn computeColorFromStatus(
+    statusCode: i32,
+    x: vec2f,
+    z: vec2f,
+    discriminant: vec2f,
+) -> vec4f {
     let mode = i32(uniforms.mode);
     var color = vec3f(0.0);
 
@@ -340,15 +361,15 @@ fn computeColor(sample: ComputedSample) -> vec4f {
     } else if (mode == 4) {
         color = heat(h_bound(x), 0.01);
     } else if (mode == 5) {
-        color = select(vec3f(1.0), vec3f(0.0), sample.statusCode == f32(BQ_TRUE));
+        color = select(vec3f(1.0), vec3f(0.0), statusCode == BQ_TRUE);
     } else {
-        if (sample.statusCode == f32(BQ_TRUE)) {
+        if (statusCode == BQ_TRUE) {
             color = vec3f(0.0, 0.0, 0.0);
-        } else if (sample.statusCode == f32(BQ_UNKNOWN_DFS_LIMIT)) {
+        } else if (statusCode == BQ_UNKNOWN_DFS_LIMIT) {
             color = vec3f(0.93, 0.31, 0.19);
-        } else if (sample.statusCode == f32(BQ_UNKNOWN_STACK)) {
+        } else if (statusCode == BQ_UNKNOWN_STACK) {
             color = vec3f(0.72, 0.29, 0.94);
-        } else if (sample.statusCode == f32(BQ_UNKNOWN_SINK)) {
+        } else if (statusCode == BQ_UNKNOWN_SINK) {
             color = vec3f(0.96, 0.68, 0.14);
         } else {
             color = vec3f(1.0, 1.0, 1.0);
@@ -368,12 +389,17 @@ fn buildPixelState(sample: ComputedSample) -> PixelState {
 fn accumulateClassificationStats(statusCode: u32, stateIndex: u32) {
     if (statusCode == u32(BQ_TRUE)) {
         atomicAdd(&classificationStats.trueCount, 1u);
-    } else if (
-        statusCode == u32(BQ_UNKNOWN_SINK) ||
-        statusCode == u32(BQ_UNKNOWN_DFS_LIMIT) ||
-        statusCode == u32(BQ_UNKNOWN_STACK)
-    ) {
+    } else if (statusCode == u32(BQ_UNKNOWN_SINK)) {
         let slot = atomicAdd(&classificationStats.unknownCount, 1u);
+        atomicAdd(&classificationStats.unknownSinkCount, 1u);
+        unknownIndices[slot] = stateIndex;
+    } else if (statusCode == u32(BQ_UNKNOWN_DFS_LIMIT)) {
+        let slot = atomicAdd(&classificationStats.unknownCount, 1u);
+        atomicAdd(&classificationStats.unknownDfsLimitCount, 1u);
+        unknownIndices[slot] = stateIndex;
+    } else if (statusCode == u32(BQ_UNKNOWN_STACK)) {
+        let slot = atomicAdd(&classificationStats.unknownCount, 1u);
+        atomicAdd(&classificationStats.unknownStackCount, 1u);
         unknownIndices[slot] = stateIndex;
     } else {
         atomicAdd(&classificationStats.falseCount, 1u);
@@ -381,7 +407,7 @@ fn accumulateClassificationStats(statusCode: u32, stateIndex: u32) {
 }
 
 @compute @workgroup_size(8, 8, 1)
-fn cs_main(@builtin(global_invocation_id) globalId: vec3u) {
+fn cs_classify_main(@builtin(global_invocation_id) globalId: vec3u) {
     if (globalId.x >= u32(uniforms.resolution.x) || globalId.y >= u32(uniforms.resolution.y)) {
         return;
     }
@@ -392,7 +418,54 @@ fn cs_main(@builtin(global_invocation_id) globalId: vec3u) {
     let pixelState = buildPixelState(sample);
     pixelStates[stateIndex] = pixelState;
     accumulateClassificationStats(u32(sample.statusCode), stateIndex);
-    textureStore(outputTexture, vec2i(globalId.xy), computeColor(sample));
+}
+
+@compute @workgroup_size(64, 1, 1)
+fn cs_refine_unknown_main(@builtin(global_invocation_id) globalId: vec3u) {
+    let unknownIndex = globalId.x;
+    let unknownCount = atomicLoad(&classificationStats.unknownCount);
+    if (unknownIndex >= unknownCount) {
+        return;
+    }
+
+    let stateIndex = unknownIndices[unknownIndex];
+    let pixelState = pixelStates[stateIndex];
+    let statusCode = i32(pixelState.zStatus.z);
+    if (statusCode != BQ_UNKNOWN_DFS_LIMIT) {
+        return;
+    }
+
+    let refinedStatus = bq_bounded_result(
+        pixelState.xy.xy,
+        pixelState.xy.zw,
+        pixelState.zStatus.xy,
+        initial_sink_limit(),
+        refinement_dfs_depth_limit(),
+        refinement_dfs_visits_limit(),
+    );
+    pixelStates[stateIndex].zStatus.z = f32(refinedStatus);
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_finalize_main(@builtin(global_invocation_id) globalId: vec3u) {
+    if (globalId.x >= u32(uniforms.resolution.x) || globalId.y >= u32(uniforms.resolution.y)) {
+        return;
+    }
+
+    let stateIndex = globalId.y * u32(uniforms.resolution.x) + globalId.x;
+    let pixelState = pixelStates[stateIndex];
+    let statusCode = i32(pixelState.zStatus.z);
+    let x = pixelState.xy.xy;
+    let z = pixelState.zStatus.xy;
+    let xy = c_mul(x, pixelState.xy.zw);
+    let discriminant = c_mul(xy, xy) - 4.0 * (c_mul(x, x) + c_mul(pixelState.xy.zw, pixelState.xy.zw));
+
+    accumulateClassificationStats(u32(statusCode), stateIndex);
+    textureStore(
+        outputTexture,
+        vec2i(globalId.xy),
+        computeColorFromStatus(statusCode, x, z, discriminant),
+    );
 }
 
 @vertex
