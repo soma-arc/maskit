@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { compareNetpbmFiles, fail } from './compare-images.mjs';
 import { renderWithBrowser } from './render-with-browser.mjs';
 
@@ -7,6 +8,35 @@ function parseOptionalNumber(value, fallback) {
   if (value == null) return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function getGitSha() {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function buildRunId() {
+  return new Date().toISOString().replaceAll(':', '-');
+}
+
+function ensureDir(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function writeJsonFile(filePath, payload) {
+  ensureDir(path.dirname(filePath));
+  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function appendJsonLine(filePath, payload) {
+  ensureDir(path.dirname(filePath));
+  fs.appendFileSync(filePath, `${JSON.stringify(payload)}\n`);
 }
 
 async function main() {
@@ -39,6 +69,12 @@ async function main() {
   const summary = compareNetpbmFiles(referencePath, rendered.outputPath, compareDir);
   const statsPath = path.join(compareDir, 'stats.json');
   const unknownSamplePath = path.join(compareDir, 'unknown-sample.json');
+  const historyDir = path.join('out', 'history');
+  const runId = buildRunId();
+  const compareLabel = path.basename(path.resolve(compareDir));
+  const historyPath = path.join(historyDir, `${runId}-${compareLabel}.json`);
+  const latestPath = path.join(historyDir, `latest-${compareLabel}.json`);
+  const historyIndexPath = path.join(historyDir, 'index.jsonl');
   const statsPayload = rendered.classificationStats
     ? {
         ...rendered.classificationStats,
@@ -52,10 +88,58 @@ async function main() {
     fs.writeFileSync(unknownSamplePath, `${JSON.stringify(rendered.unknownSample, null, 2)}\n`);
   }
 
+  const historyEntry = {
+    runId,
+    timestamp: new Date().toISOString(),
+    gitSha: getGitSha(),
+    referencePath,
+    outputPath: rendered.outputPath,
+    compareDir,
+    pagePath,
+    params: {
+      mode,
+      width,
+      height,
+      maxSinkIters,
+      maxDfsDepth,
+      maxDfsVisits,
+      unknownSampleLimit,
+    },
+    summary,
+    renderState: rendered.state,
+    classificationStats: rendered.classificationStats,
+    unknownSample: rendered.unknownSample,
+    artifacts: {
+      summaryPath: summary.summaryPath,
+      diffPath: summary.diffPath,
+      statsPath: statsPayload ? statsPath : null,
+      unknownSamplePath: rendered.unknownSample ? unknownSamplePath : null,
+    },
+  };
+  writeJsonFile(historyPath, historyEntry);
+  writeJsonFile(latestPath, historyEntry);
+  appendJsonLine(historyIndexPath, {
+    runId: historyEntry.runId,
+    timestamp: historyEntry.timestamp,
+    gitSha: historyEntry.gitSha,
+    compareDir: historyEntry.compareDir,
+    pagePath: historyEntry.pagePath,
+    params: historyEntry.params,
+    mismatchRatio: historyEntry.summary.mismatchRatio,
+    mismatches: historyEntry.summary.mismatches,
+    falsePositive: historyEntry.summary.falsePositive,
+    falseNegative: historyEntry.summary.falseNegative,
+    statsPath: historyEntry.artifacts.statsPath,
+    unknownSamplePath: historyEntry.artifacts.unknownSamplePath,
+    historyPath,
+  });
+
   console.log(
     JSON.stringify(
       {
         ...summary,
+        historyPath,
+        latestHistoryPath: latestPath,
         renderState: rendered.state,
         statsPath: statsPayload ? statsPath : null,
         unknownSamplePath: rendered.unknownSample ? unknownSamplePath : null,
