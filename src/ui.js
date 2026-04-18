@@ -3,6 +3,7 @@ import { DEFAULT_RENDER_HEIGHT, DEFAULT_RENDER_WIDTH } from './viewer-state.js';
 export function getViewerElements(doc = document) {
     return {
         canvas: doc.getElementById('c'),
+        hybridCanvas: doc.getElementById('hybrid-c'),
         modeSelect: doc.getElementById('mode'),
         yRealInput: doc.getElementById('y-real'),
         yImagInput: doc.getElementById('y-imag'),

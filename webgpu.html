@@ -32,6 +32,10 @@
         padding: 24px;
       }
 
+      .stage__stack {
+        position: relative;
+      }
+
       .hud {
         position: fixed;
         top: 16px;
@@ -118,6 +122,13 @@
         image-rendering: pixelated;
         image-rendering: crisp-edges;
       }
+
+      #hybrid-c {
+        position: absolute;
+        inset: 0;
+        display: none;
+        pointer-events: none;
+      }
     </style>
   </head>
   <body>
@@ -138,6 +149,7 @@
             <option value="4">H(x) branch</option>
             <option value="5">Compare binary (bounded DFS)</option>
             <option value="6">Compare with unknown highlight</option>
+            <option value="7">Hybrid compare (browser CPU refine)</option>
           </select>
         </label>
 
@@ -186,7 +198,10 @@
       <div id="status" class="hud__status"></div>
     </section>
     <div class="stage">
-      <canvas id="c" data-testid="render-canvas"></canvas>
+      <div class="stage__stack">
+        <canvas id="c" data-testid="render-canvas"></canvas>
+        <canvas id="hybrid-c"></canvas>
+      </div>
     </div>
     <script type="module" src="/src/webgpu-main.js"></script>
   </body>
