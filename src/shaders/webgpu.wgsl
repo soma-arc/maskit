@@ -48,11 +48,11 @@ struct BlitVertexOutput {
 @group(1) @binding(1) var outputTextureForSampling: texture_2d<f32>;
 
 const MAX_SINK_ITERS_LIMIT: i32 = 64;
-const MAX_DFS_DEPTH_LIMIT: i32 = 384;
+const MAX_DFS_DEPTH_LIMIT: i32 = 512;
 const MAX_DFS_STACK: i32 = 384;
-const MAX_DFS_VISITS_LIMIT: i32 = 32768;
-const REFINEMENT_DFS_DEPTH_LIMIT: i32 = 384;
-const REFINEMENT_DFS_VISITS_LIMIT: i32 = 32768;
+const MAX_DFS_VISITS_LIMIT: i32 = 65536;
+const REFINEMENT_DFS_DEPTH_LIMIT: i32 = 512;
+const REFINEMENT_DFS_VISITS_LIMIT: i32 = 65536;
 const BQ_FALSE: i32 = 0;
 const BQ_TRUE: i32 = 1;
 const BQ_UNKNOWN_SINK: i32 = 2;
@@ -194,68 +194,65 @@ fn bq_dfs_bounded_result(
     var stackC: array<vec2f, MAX_DFS_STACK>;
     var stackDepth: array<i32, MAX_DFS_STACK>;
 
-    var stackSize = 1;
-    stackA[0] = a0;
-    stackB[0] = b0;
-    stackC[0] = c0;
-    stackDepth[0] = 0;
+    var currentA = a0;
+    var currentB = b0;
+    var currentC = c0;
+    var currentDepth = 0;
+    var stackSize = 0;
 
     for (var visit = 0; visit < MAX_DFS_VISITS_LIMIT; visit += 1) {
         if (visit >= maxDfsVisits) {
             return BQ_UNKNOWN_DFS_LIMIT;
         }
-        if (stackSize <= 0) {
-            return BQ_TRUE;
-        }
 
-        stackSize -= 1;
-
-        let a = stackA[stackSize];
-        let b = stackB[stackSize];
-        let c = stackC[stackSize];
-        let depth = stackDepth[stackSize];
-
-        if (depth > maxDfsDepth || depth > MAX_DFS_DEPTH_LIMIT) {
+        if (currentDepth > maxDfsDepth || currentDepth > MAX_DFS_DEPTH_LIMIT) {
             return BQ_UNKNOWN_DFS_LIMIT;
         }
 
-        if (is_bq1_failure(b) || is_bq1_failure(c)) {
+        if (is_bq1_failure(currentB) || is_bq1_failure(currentC)) {
             return BQ_FALSE;
         }
 
-        let absb2 = c_abs2(b);
-        let absc2 = c_abs2(c);
-        let hBoundB = h_bound(b) + 1.0;
-        let hBoundC = h_bound(c) + 1.0;
+        let absb2 = c_abs2(currentB);
+        let absc2 = c_abs2(currentC);
+        let hBoundB = h_bound(currentB) + 1.0;
+        let hBoundC = h_bound(currentC) + 1.0;
         let inTree = (absb2 <= 9.0 && absc2 <= hBoundB * hBoundB) ||
             (absc2 <= 9.0 && absb2 <= hBoundC * hBoundC);
         if (!inTree) {
+            if (stackSize <= 0) {
+                return BQ_TRUE;
+            }
+            stackSize -= 1;
+            currentA = stackA[stackSize];
+            currentB = stackB[stackSize];
+            currentC = stackC[stackSize];
+            currentDepth = stackDepth[stackSize];
             continue;
         }
 
-        let d = c_mul(b, c) - a;
+        let d = c_mul(currentB, currentC) - currentA;
         if (c_abs2(d) < 0.25) {
             return BQ_FALSE;
         }
 
-        if (stackSize + 2 > MAX_DFS_STACK) {
+        if (stackSize + 1 > MAX_DFS_STACK) {
             return BQ_UNKNOWN_STACK;
         }
 
-        stackA[stackSize] = b;
-        stackB[stackSize] = c;
+        stackA[stackSize] = currentC;
+        stackB[stackSize] = currentB;
         stackC[stackSize] = d;
-        stackDepth[stackSize] = depth + 1;
+        stackDepth[stackSize] = currentDepth + 1;
         stackSize += 1;
 
-        stackA[stackSize] = c;
-        stackB[stackSize] = b;
-        stackC[stackSize] = d;
-        stackDepth[stackSize] = depth + 1;
-        stackSize += 1;
+        currentA = currentB;
+        currentB = currentC;
+        currentC = d;
+        currentDepth += 1;
     }
 
-    return select(BQ_UNKNOWN_DFS_LIMIT, BQ_TRUE, stackSize <= 0);
+    return BQ_UNKNOWN_DFS_LIMIT;
 }
 
 fn bq_bounded_result(
@@ -445,6 +442,7 @@ fn cs_refine_unknown_main(@builtin(global_invocation_id) globalId: vec3u) {
     );
     pixelStates[stateIndex].zStatus.z = f32(refinedStatus);
 }
+
 
 @compute @workgroup_size(8, 8, 1)
 fn cs_finalize_main(@builtin(global_invocation_id) globalId: vec3u) {
