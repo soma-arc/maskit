@@ -15,10 +15,11 @@ import {
 
 const GPU_COMPARE_MODE = 5;
 const HYBRID_COMPARE_MODE = 7;
+const UNKNOWN_HIGHLIGHT_MODE = 6;
 
 const elements = getViewerElements();
 const { canvas, hybridCanvas } = elements;
-const hybridContext = hybridCanvas.getContext('2d', { alpha: false });
+const hybridContext = hybridCanvas.getContext('2d');
 const searchParams = new URLSearchParams(window.location.search);
 const isAutomation = searchParams.get('automation') === '1';
 const state = createInitialViewerState(elements, searchParams);
@@ -27,13 +28,13 @@ const hybridWorker = new Worker(new URL('./workers/bq-refine-worker.js', import.
 });
 
 let renderer;
-let frameCounter = 0;
-let fpsWindowStart = performance.now();
 let fps = 0;
 let statusMessage = '';
 let hybridRefreshPromise = null;
 let hybridRefreshPending = false;
 let hybridWorkerRequestId = 0;
+let renderScheduled = false;
+let lastRenderTimestamp = 0;
 
 const hybridWorkerRequests = new Map();
 
@@ -67,9 +68,18 @@ hybridWorker.addEventListener('message', (event) => {
 });
 
 function getRendererState(viewState) {
-    return viewState.mode === HYBRID_COMPARE_MODE
-        ? { ...viewState, mode: GPU_COMPARE_MODE }
-        : viewState;
+    if (viewState.mode !== HYBRID_COMPARE_MODE) {
+        return viewState;
+    }
+
+    return {
+        ...viewState,
+        mode: viewState.showGpuUnknown ? UNKNOWN_HIGHLIGHT_MODE : GPU_COMPARE_MODE,
+    };
+}
+
+function isHybridRefineEnabled(viewState) {
+    return viewState.mode === HYBRID_COMPARE_MODE;
 }
 
 function getHybridSignature(viewState) {
@@ -84,12 +94,31 @@ function getHybridSignature(viewState) {
         maxSinkIters: viewState.maxSinkIters,
         maxDfsDepth: viewState.maxDfsDepth,
         maxDfsVisits: viewState.maxDfsVisits,
+        showGpuUnknown: viewState.showGpuUnknown,
     });
 }
 
 function setStatusMessage(message = '') {
     statusMessage = message;
     updateStatus();
+}
+
+function scheduleRender() {
+    if (!renderer || isAutomation || renderScheduled) {
+        return;
+    }
+
+    renderScheduled = true;
+    requestAnimationFrame((now) => {
+        renderScheduled = false;
+        renderer.render(getRendererState(state));
+        if (lastRenderTimestamp > 0) {
+            const deltaMs = now - lastRenderTimestamp;
+            fps = deltaMs > 0 ? 1000 / deltaMs : 0;
+        }
+        lastRenderTimestamp = now;
+        updateStatus();
+    });
 }
 
 function updateStatus() {
@@ -113,7 +142,7 @@ function hideHybridCanvas() {
 
 function syncHybridCanvasVisibility() {
     const shouldShow =
-        state.mode === HYBRID_COMPARE_MODE &&
+        isHybridRefineEnabled(state) &&
         hybridFrame.signature === getHybridSignature(state) &&
         hybridFrame.ppm != null;
 
@@ -138,18 +167,16 @@ function buildBinaryMaskFromRgba(width, height, pixels) {
     return mask;
 }
 
-function buildDisplayRgbaFromBinaryMask(width, height, mask) {
+function buildUnknownOverlayFromRefinedMask(width, height, refinedMask, unknownPixels) {
     const pixels = new Uint8Array(width * height * 4);
-    for (let y = 0; y < height; y += 1) {
-        const sourceY = height - 1 - y;
-        for (let x = 0; x < width; x += 1) {
-            const channel = mask[sourceY * width + x] === 1 ? 0 : 255;
-            const rgbaIndex = (y * width + x) * 4;
-            pixels[rgbaIndex] = channel;
-            pixels[rgbaIndex + 1] = channel;
-            pixels[rgbaIndex + 2] = channel;
-            pixels[rgbaIndex + 3] = 255;
-        }
+    for (const pixel of unknownPixels) {
+        const maskIndex = (height - 1 - pixel.y) * width + pixel.x;
+        const channel = refinedMask[maskIndex] === 1 ? 0 : 255;
+        const rgbaIndex = (pixel.y * width + pixel.x) * 4;
+        pixels[rgbaIndex] = channel;
+        pixels[rgbaIndex + 1] = channel;
+        pixels[rgbaIndex + 2] = channel;
+        pixels[rgbaIndex + 3] = 255;
     }
     return pixels;
 }
@@ -194,7 +221,7 @@ function drawHybridFrame(width, height, pixels) {
 }
 
 async function buildHybridFrame(viewState) {
-    const renderState = { ...viewState, mode: GPU_COMPARE_MODE };
+    const renderState = getRendererState(viewState);
     const [pixels, unknownPayload] = await Promise.all([
         renderer.readPixels(renderState),
         renderer.readUnknownPixelIndices(renderState, renderState.width * renderState.height),
@@ -209,10 +236,11 @@ async function buildHybridFrame(viewState) {
             maxDepth: 995,
         },
     );
-    const hybridPixels = buildDisplayRgbaFromBinaryMask(
+    const hybridPixels = buildUnknownOverlayFromRefinedMask(
         renderState.width,
         renderState.height,
         refined.refinedMask,
+        unknownPayload.indices,
     );
     const ppm = buildPpmFromBinaryMask(renderState.width, renderState.height, refined.refinedMask);
 
@@ -230,7 +258,7 @@ async function buildHybridFrame(viewState) {
 }
 
 async function ensureHybridFrame(force = false) {
-    if (state.mode !== HYBRID_COMPARE_MODE) {
+    if (!isHybridRefineEnabled(state)) {
         syncHybridCanvasVisibility();
         return null;
     }
@@ -289,7 +317,8 @@ function applyResolution() {
 }
 
 function requestHybridRefreshIfNeeded() {
-    if (state.mode === HYBRID_COMPARE_MODE) {
+    scheduleRender();
+    if (isHybridRefineEnabled(state)) {
         requestHybridRefresh();
     } else {
         syncHybridCanvasVisibility();
@@ -322,7 +351,7 @@ window.addEventListener('mousemove', (event) => {
     if (!dragging) return;
     const { dx, dy } = cssDeltaToBufferDelta(event.clientX - lastX, event.clientY - lastY);
     state.offsetX -= dx / state.scale;
-    state.offsetY += dy / state.scale;
+    state.offsetY -= dy / state.scale;
     lastX = event.clientX;
     lastY = event.clientY;
     requestHybridRefreshIfNeeded();
@@ -357,6 +386,7 @@ elements.resetViewButton.addEventListener('click', () => {
 
 elements.modeSelect.addEventListener('change', () => {
     state.mode = Number(elements.modeSelect.value);
+    syncInputsWithState(elements, state);
     requestHybridRefreshIfNeeded();
     updateStatus();
 });
@@ -384,8 +414,14 @@ for (const input of [elements.sinkItersInput, elements.dfsDepthInput, elements.d
     });
 }
 
+elements.showGpuUnknownInput.addEventListener('change', () => {
+    state.showGpuUnknown = elements.showGpuUnknownInput.checked;
+    requestHybridRefreshIfNeeded();
+    updateStatus();
+});
+
 async function buildCurrentFramePpm() {
-    if (state.mode === HYBRID_COMPARE_MODE) {
+    if (isHybridRefineEnabled(state)) {
         const frame = await ensureHybridFrame();
         return frame?.ppm ?? '';
     }
@@ -421,6 +457,9 @@ function setParams(params = {}) {
     if (typeof params.maxDfsVisits === 'number') state.maxDfsVisits = params.maxDfsVisits;
     if (typeof params.width === 'number') state.width = Math.max(1, Math.round(params.width));
     if (typeof params.height === 'number') state.height = Math.max(1, Math.round(params.height));
+    if (typeof params.showGpuUnknown === 'boolean') {
+        state.showGpuUnknown = params.showGpuUnknown;
+    }
 
     syncInputsWithState(elements, state);
     applyResolution();
@@ -432,7 +471,7 @@ function installAutomationApi() {
         setParams,
         renderOnce: async () => {
             const wallStart = performance.now();
-            if (state.mode === HYBRID_COMPARE_MODE) {
+            if (isHybridRefineEnabled(state)) {
                 await ensureHybridFrame(true);
             } else {
                 await renderer.renderOnce(getRendererState(state));
@@ -468,20 +507,6 @@ function installAutomationApi() {
     };
 }
 
-function frame() {
-    renderer.render(getRendererState(state));
-    frameCounter += 1;
-    const now = performance.now();
-    const elapsed = now - fpsWindowStart;
-    if (elapsed >= 500) {
-        fps = (frameCounter * 1000) / elapsed;
-        frameCounter = 0;
-        fpsWindowStart = now;
-        updateStatus();
-    }
-    requestAnimationFrame(frame);
-}
-
 async function main() {
     try {
         renderer = await createWebgpuRenderer({ canvas });
@@ -495,9 +520,6 @@ async function main() {
     installAutomationApi();
     requestHybridRefreshIfNeeded();
     setStatusMessage('WebGPU preview ready');
-    if (!isAutomation) {
-        requestAnimationFrame(frame);
-    }
 }
 
 main().catch((error) => {

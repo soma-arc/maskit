@@ -82,6 +82,19 @@
         color: #b8c6d8;
       }
 
+      .toggle {
+        grid-column: span 2;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .toggle input {
+        width: 16px;
+        height: 16px;
+        padding: 0;
+      }
+
       input,
       select,
       button {
@@ -92,6 +105,17 @@
         color: inherit;
         font: inherit;
         padding: 9px 10px;
+      }
+
+      input[type="checkbox"] {
+        appearance: auto;
+        width: 16px;
+        height: 16px;
+        margin: 0;
+        padding: 0;
+        border: none;
+        background: transparent;
+        accent-color: #7cc5ff;
       }
 
       button {
@@ -186,6 +210,11 @@
         <label>
           DFS visits
           <input id="dfs-visits" type="number" min="1" step="1" value="8192" />
+        </label>
+
+        <label class="toggle">
+          <input id="show-gpu-unknown" type="checkbox" />
+          <span>Show WebGPU unknown highlight</span>
         </label>
       </div>
 

@@ -25,6 +25,14 @@ function parseIntParam(searchParams, name, fallback) {
     return Number.isFinite(value) ? value : fallback;
 }
 
+function parseBooleanParam(searchParams, name, fallback) {
+    const raw = searchParams.get(name);
+    if (raw == null) return fallback;
+    if (raw === '1' || raw === 'true') return true;
+    if (raw === '0' || raw === 'false') return false;
+    return fallback;
+}
+
 export function createInitialViewerState(elements, searchParams) {
     const width = parseIntParam(
         searchParams,
@@ -37,6 +45,13 @@ export function createInitialViewerState(elements, searchParams) {
         Number.parseInt(elements.renderHeightInput.value, 10) || DEFAULT_RENDER_HEIGHT,
     );
 
+    const mode = parseIntParam(searchParams, 'mode', Number(elements.modeSelect.value));
+    const showGpuUnknown = parseBooleanParam(
+        searchParams,
+        'showGpuUnknown',
+        elements.showGpuUnknownInput.checked,
+    );
+
     return {
         width,
         height,
@@ -45,7 +60,7 @@ export function createInitialViewerState(elements, searchParams) {
         scale: parseFiniteParam(searchParams, 'scale', defaultScaleForResolution(width, height)),
         yReal: parseFiniteParam(searchParams, 'yReal', Number(elements.yRealInput.value)),
         yImag: parseFiniteParam(searchParams, 'yImag', Number(elements.yImagInput.value)),
-        mode: parseIntParam(searchParams, 'mode', Number(elements.modeSelect.value)),
+        mode,
         maxSinkIters: parseIntParam(
             searchParams,
             'sinkIters',
@@ -57,5 +72,6 @@ export function createInitialViewerState(elements, searchParams) {
             'dfsVisits',
             Number(elements.dfsVisitsInput.value),
         ),
+        showGpuUnknown,
     };
 }

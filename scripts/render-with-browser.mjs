@@ -125,6 +125,7 @@ export async function renderWithBrowser({
   includeDiagnostics = false,
   returnState = false,
   includeAllUnknownPixels = false,
+  cpuRefineUnknown,
 } = {}) {
   if (!fs.existsSync(path.join(distDir, 'index.html'))) {
     fail('dist/index.html がありません。先に pnpm build を実行してください。');
@@ -197,6 +198,7 @@ export async function renderWithBrowser({
       maxSinkIters,
       maxDfsDepth,
       maxDfsVisits,
+      cpuRefineUnknown,
       includeDiagnostics,
       includeAllUnknownPixels,
       unknownSampleLimit,
