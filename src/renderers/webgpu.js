@@ -103,7 +103,7 @@ export async function createWebgpuRenderer({ canvas }) {
         });
 
         blitBindGroup = device.createBindGroup({
-            layout: blitPipeline.getBindGroupLayout(0),
+            layout: blitPipeline.getBindGroupLayout(1),
             entries: [
                 { binding: 0, resource: sampler },
                 { binding: 1, resource: outputTextureView },
@@ -156,7 +156,7 @@ export async function createWebgpuRenderer({ canvas }) {
             ],
         });
         renderPass.setPipeline(blitPipeline);
-        renderPass.setBindGroup(0, blitBindGroup);
+        renderPass.setBindGroup(1, blitBindGroup);
         renderPass.draw(3);
         renderPass.end();
     }
