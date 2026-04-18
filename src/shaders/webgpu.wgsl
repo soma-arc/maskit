@@ -44,12 +44,14 @@ struct BlitVertexOutput {
 @group(1) @binding(1) var outputTextureForSampling: texture_2d<f32>;
 
 const MAX_SINK_ITERS_LIMIT: i32 = 64;
-const MAX_DFS_DEPTH_LIMIT: i32 = 96;
-const MAX_DFS_STACK: i32 = 128;
-const MAX_DFS_VISITS_LIMIT: i32 = 512;
+const MAX_DFS_DEPTH_LIMIT: i32 = 192;
+const MAX_DFS_STACK: i32 = 192;
+const MAX_DFS_VISITS_LIMIT: i32 = 2048;
 const BQ_FALSE: i32 = 0;
 const BQ_TRUE: i32 = 1;
-const BQ_UNKNOWN: i32 = 2;
+const BQ_UNKNOWN_SINK: i32 = 2;
+const BQ_UNKNOWN_DFS_LIMIT: i32 = 3;
+const BQ_UNKNOWN_STACK: i32 = 4;
 
 fn c_mul(a: vec2f, b: vec2f) -> vec2f {
     return vec2f(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
@@ -96,7 +98,24 @@ fn h_bound(x: vec2f) -> f32 {
     return prefactor * (2.0 * lambdaAbs * lambdaAbs) / max(lambdaAbs - 1.0, 1e-6);
 }
 
-fn bq_sink_to_local_minimum(a0: vec2f, b0: vec2f, c0: vec2f) -> array<vec2f, 4> {
+fn initial_sink_limit() -> i32 {
+    return clamp(i32(uniforms.maxSinkIters), 1, MAX_SINK_ITERS_LIMIT);
+}
+
+fn initial_dfs_depth_limit() -> i32 {
+    return clamp(i32(uniforms.maxDfsDepth), 1, MAX_DFS_DEPTH_LIMIT);
+}
+
+fn initial_dfs_visits_limit() -> i32 {
+    return clamp(i32(uniforms.maxDfsVisits), 1, MAX_DFS_VISITS_LIMIT);
+}
+
+fn bq_sink_to_local_minimum(
+    a0: vec2f,
+    b0: vec2f,
+    c0: vec2f,
+    maxSinkIters: i32,
+) -> array<vec2f, 4> {
     var a = a0;
     var b = b0;
     var c = c0;
@@ -105,8 +124,8 @@ fn bq_sink_to_local_minimum(a0: vec2f, b0: vec2f, c0: vec2f) -> array<vec2f, 4> 
     }
 
     for (var iter = 0; iter < MAX_SINK_ITERS_LIMIT; iter += 1) {
-        if (iter >= i32(uniforms.maxSinkIters)) {
-            return array<vec2f, 4>(vec2f(f32(BQ_UNKNOWN), 0.0), a, b, c);
+        if (iter >= maxSinkIters) {
+            return array<vec2f, 4>(vec2f(f32(BQ_UNKNOWN_SINK), 0.0), a, b, c);
         }
 
         let A = c_mul(b, c) - a;
@@ -140,14 +159,20 @@ fn bq_sink_to_local_minimum(a0: vec2f, b0: vec2f, c0: vec2f) -> array<vec2f, 4> 
         return array<vec2f, 4>(vec2f(f32(BQ_TRUE), 0.0), a, b, c);
     }
 
-    return array<vec2f, 4>(vec2f(f32(BQ_UNKNOWN), 0.0), a, b, c);
+    return array<vec2f, 4>(vec2f(f32(BQ_UNKNOWN_SINK), 0.0), a, b, c);
 }
 
 fn is_bq1_failure(z: vec2f) -> bool {
     return abs(z.y) <= 1e-5 && z.x >= -2.0 && z.x <= 2.0;
 }
 
-fn bq_dfs_bounded_result(a0: vec2f, b0: vec2f, c0: vec2f) -> i32 {
+fn bq_dfs_bounded_result(
+    a0: vec2f,
+    b0: vec2f,
+    c0: vec2f,
+    maxDfsDepth: i32,
+    maxDfsVisits: i32,
+) -> i32 {
     var stackA: array<vec2f, MAX_DFS_STACK>;
     var stackB: array<vec2f, MAX_DFS_STACK>;
     var stackC: array<vec2f, MAX_DFS_STACK>;
@@ -160,8 +185,8 @@ fn bq_dfs_bounded_result(a0: vec2f, b0: vec2f, c0: vec2f) -> i32 {
     stackDepth[0] = 0;
 
     for (var visit = 0; visit < MAX_DFS_VISITS_LIMIT; visit += 1) {
-        if (visit >= i32(uniforms.maxDfsVisits)) {
-            return BQ_UNKNOWN;
+        if (visit >= maxDfsVisits) {
+            return BQ_UNKNOWN_DFS_LIMIT;
         }
         if (stackSize <= 0) {
             return BQ_TRUE;
@@ -174,8 +199,8 @@ fn bq_dfs_bounded_result(a0: vec2f, b0: vec2f, c0: vec2f) -> i32 {
         let c = stackC[stackSize];
         let depth = stackDepth[stackSize];
 
-        if (depth > i32(uniforms.maxDfsDepth) || depth > MAX_DFS_DEPTH_LIMIT) {
-            return BQ_UNKNOWN;
+        if (depth > maxDfsDepth || depth > MAX_DFS_DEPTH_LIMIT) {
+            return BQ_UNKNOWN_DFS_LIMIT;
         }
 
         if (is_bq1_failure(b) || is_bq1_failure(c)) {
@@ -198,7 +223,7 @@ fn bq_dfs_bounded_result(a0: vec2f, b0: vec2f, c0: vec2f) -> i32 {
         }
 
         if (stackSize + 2 > MAX_DFS_STACK) {
-            return BQ_UNKNOWN;
+            return BQ_UNKNOWN_STACK;
         }
 
         stackA[stackSize] = b;
@@ -214,32 +239,50 @@ fn bq_dfs_bounded_result(a0: vec2f, b0: vec2f, c0: vec2f) -> i32 {
         stackSize += 1;
     }
 
-    return select(BQ_UNKNOWN, BQ_TRUE, stackSize <= 0);
+    return select(BQ_UNKNOWN_DFS_LIMIT, BQ_TRUE, stackSize <= 0);
 }
 
-fn bq_bounded_result(a: vec2f, b: vec2f, c: vec2f) -> i32 {
-    let sink = bq_sink_to_local_minimum(a, b, c);
+fn bq_bounded_result(
+    a: vec2f,
+    b: vec2f,
+    c: vec2f,
+    maxSinkIters: i32,
+    maxDfsDepth: i32,
+    maxDfsVisits: i32,
+) -> i32 {
+    let sink = bq_sink_to_local_minimum(a, b, c, maxSinkIters);
     let sinkStatus = i32(sink[0].x);
     if (sinkStatus == BQ_FALSE) {
         return BQ_FALSE;
     }
-    if (sinkStatus == BQ_UNKNOWN) {
-        return BQ_UNKNOWN;
+    if (sinkStatus == BQ_UNKNOWN_SINK) {
+        return BQ_UNKNOWN_SINK;
     }
 
     let sinkA = sink[1];
     let sinkB = sink[2];
     let sinkC = sink[3];
 
-    let result1 = bq_dfs_bounded_result(sinkA, sinkB, sinkC);
-    let result2 = bq_dfs_bounded_result(sinkB, sinkC, sinkA);
-    let result3 = bq_dfs_bounded_result(sinkC, sinkB, sinkA);
+    let result1 = bq_dfs_bounded_result(sinkA, sinkB, sinkC, maxDfsDepth, maxDfsVisits);
+    let result2 = bq_dfs_bounded_result(sinkB, sinkC, sinkA, maxDfsDepth, maxDfsVisits);
+    let result3 = bq_dfs_bounded_result(sinkC, sinkB, sinkA, maxDfsDepth, maxDfsVisits);
 
     if (result1 == BQ_FALSE || result2 == BQ_FALSE || result3 == BQ_FALSE) {
         return BQ_FALSE;
     }
-    if (result1 == BQ_UNKNOWN || result2 == BQ_UNKNOWN || result3 == BQ_UNKNOWN) {
-        return BQ_UNKNOWN;
+    if (
+        result1 == BQ_UNKNOWN_STACK ||
+        result2 == BQ_UNKNOWN_STACK ||
+        result3 == BQ_UNKNOWN_STACK
+    ) {
+        return BQ_UNKNOWN_STACK;
+    }
+    if (
+        result1 == BQ_UNKNOWN_DFS_LIMIT ||
+        result2 == BQ_UNKNOWN_DFS_LIMIT ||
+        result3 == BQ_UNKNOWN_DFS_LIMIT
+    ) {
+        return BQ_UNKNOWN_DFS_LIMIT;
     }
     return BQ_TRUE;
 }
@@ -254,7 +297,22 @@ fn computeSample(fragCoord: vec2f) -> ComputedSample {
     let discriminant = c_mul(xy, xy) - 4.0 * (xx + yy);
     let z = 0.5 * (xy + c_sqrt(discriminant));
 
-    return ComputedSample(x, y, z, discriminant, f32(bq_bounded_result(x, y, z)));
+    return ComputedSample(
+        x,
+        y,
+        z,
+        discriminant,
+        f32(
+            bq_bounded_result(
+                x,
+                y,
+                z,
+                initial_sink_limit(),
+                initial_dfs_depth_limit(),
+                initial_dfs_visits_limit(),
+            ),
+        ),
+    );
 }
 
 fn computeColor(sample: ComputedSample) -> vec4f {
@@ -286,8 +344,12 @@ fn computeColor(sample: ComputedSample) -> vec4f {
     } else {
         if (sample.statusCode == f32(BQ_TRUE)) {
             color = vec3f(0.0, 0.0, 0.0);
-        } else if (sample.statusCode == f32(BQ_UNKNOWN)) {
+        } else if (sample.statusCode == f32(BQ_UNKNOWN_DFS_LIMIT)) {
             color = vec3f(0.93, 0.31, 0.19);
+        } else if (sample.statusCode == f32(BQ_UNKNOWN_STACK)) {
+            color = vec3f(0.72, 0.29, 0.94);
+        } else if (sample.statusCode == f32(BQ_UNKNOWN_SINK)) {
+            color = vec3f(0.96, 0.68, 0.14);
         } else {
             color = vec3f(1.0, 1.0, 1.0);
         }
@@ -306,7 +368,11 @@ fn buildPixelState(sample: ComputedSample) -> PixelState {
 fn accumulateClassificationStats(statusCode: u32, stateIndex: u32) {
     if (statusCode == u32(BQ_TRUE)) {
         atomicAdd(&classificationStats.trueCount, 1u);
-    } else if (statusCode == u32(BQ_UNKNOWN)) {
+    } else if (
+        statusCode == u32(BQ_UNKNOWN_SINK) ||
+        statusCode == u32(BQ_UNKNOWN_DFS_LIMIT) ||
+        statusCode == u32(BQ_UNKNOWN_STACK)
+    ) {
         let slot = atomicAdd(&classificationStats.unknownCount, 1u);
         unknownIndices[slot] = stateIndex;
     } else {

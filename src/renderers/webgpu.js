@@ -299,7 +299,16 @@ export async function createWebgpuRenderer({ canvas }) {
         outputBuffer.destroy();
 
         const statusCode = Math.round(values[6]);
-        const statusName = statusCode === 1 ? 'true' : statusCode === 2 ? 'unknown' : 'false';
+        const statusName =
+            statusCode === 1
+                ? 'true'
+                : statusCode === 2
+                  ? 'unknown_sink'
+                  : statusCode === 3
+                    ? 'unknown_dfs_limit'
+                    : statusCode === 4
+                      ? 'unknown_stack'
+                      : 'false';
 
         return {
             x: { real: values[0], imag: values[1] },
@@ -307,7 +316,7 @@ export async function createWebgpuRenderer({ canvas }) {
             z: { real: values[4], imag: values[5] },
             statusCode,
             statusName,
-            isBqLike: statusCode === 1,
+            isBqLike: statusCode === 1 || statusCode === 3,
             reserved: values[7],
         };
     }
