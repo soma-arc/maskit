@@ -1,4 +1,3 @@
-import { refineUnknownMask } from './bq-cpu.mjs';
 import { buildPpmFromRgba, downloadPpm } from './ppm-export.js';
 import { createWebgpuRenderer } from './renderers/webgpu.js';
 import {
@@ -23,6 +22,9 @@ const hybridContext = hybridCanvas.getContext('2d', { alpha: false });
 const searchParams = new URLSearchParams(window.location.search);
 const isAutomation = searchParams.get('automation') === '1';
 const state = createInitialViewerState(elements, searchParams);
+const hybridWorker = new Worker(new URL('./workers/bq-refine-worker.js', import.meta.url), {
+    type: 'module',
+});
 
 let renderer;
 let frameCounter = 0;
@@ -31,12 +33,38 @@ let fps = 0;
 let statusMessage = '';
 let hybridRefreshPromise = null;
 let hybridRefreshPending = false;
+let hybridWorkerRequestId = 0;
+
+const hybridWorkerRequests = new Map();
 
 const hybridFrame = {
     signature: null,
     ppm: null,
     refinement: null,
 };
+
+hybridWorker.addEventListener('message', (event) => {
+    const { requestId, refinedMaskBuffer, resolvedCount, resolvedTrue, resolvedFalse, error } =
+        event.data;
+    const pending = hybridWorkerRequests.get(requestId);
+    if (!pending) {
+        return;
+    }
+
+    hybridWorkerRequests.delete(requestId);
+
+    if (error) {
+        pending.reject(new Error(error));
+        return;
+    }
+
+    pending.resolve({
+        refinedMask: new Uint8Array(refinedMaskBuffer),
+        resolvedCount,
+        resolvedTrue,
+        resolvedFalse,
+    });
+});
 
 function getRendererState(viewState) {
     return viewState.mode === HYBRID_COMPARE_MODE
@@ -139,6 +167,26 @@ function buildPpmFromBinaryMask(width, height, mask) {
     return `${lines.join('\n')}\n`;
 }
 
+function refineUnknownMaskInWorker(renderState, candidateMask, unknownPixels, options) {
+    const requestId = hybridWorkerRequestId;
+    hybridWorkerRequestId += 1;
+    const candidateMaskBuffer = candidateMask.buffer.slice(0);
+
+    return new Promise((resolve, reject) => {
+        hybridWorkerRequests.set(requestId, { resolve, reject });
+        hybridWorker.postMessage(
+            {
+                requestId,
+                renderState,
+                candidateMaskBuffer,
+                unknownPixels,
+                options,
+            },
+            [candidateMaskBuffer],
+        );
+    });
+}
+
 function drawHybridFrame(width, height, pixels) {
     const imageData = new ImageData(new Uint8ClampedArray(pixels), width, height);
     hybridContext.putImageData(imageData, 0, 0);
@@ -152,10 +200,15 @@ async function buildHybridFrame(viewState) {
         renderer.readUnknownPixelIndices(renderState, renderState.width * renderState.height),
     ]);
     const candidateMask = buildBinaryMaskFromRgba(renderState.width, renderState.height, pixels);
-    const refined = refineUnknownMask(renderState, candidateMask, unknownPayload.indices, {
-        maxSinkIters: 1_000_000,
-        maxDepth: 995,
-    });
+    const refined = await refineUnknownMaskInWorker(
+        renderState,
+        candidateMask,
+        unknownPayload.indices,
+        {
+            maxSinkIters: 1_000_000,
+            maxDepth: 995,
+        },
+    );
     const hybridPixels = buildDisplayRgbaFromBinaryMask(
         renderState.width,
         renderState.height,
