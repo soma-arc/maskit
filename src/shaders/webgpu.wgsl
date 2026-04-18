@@ -272,8 +272,16 @@ fn computeColor(sample: ComputedSample) -> vec4f {
         color = heat(c_abs(discriminant), 0.015);
     } else if (mode == 4) {
         color = heat(h_bound(x), 0.01);
-    } else {
+    } else if (mode == 5) {
         color = select(vec3f(1.0), vec3f(0.0), sample.statusCode == f32(BQ_TRUE));
+    } else {
+        if (sample.statusCode == f32(BQ_TRUE)) {
+            color = vec3f(0.0, 0.0, 0.0);
+        } else if (sample.statusCode == f32(BQ_UNKNOWN)) {
+            color = vec3f(0.93, 0.31, 0.19);
+        } else {
+            color = vec3f(1.0, 1.0, 1.0);
+        }
     }
 
     return vec4f(color, 1.0);
