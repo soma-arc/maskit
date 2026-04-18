@@ -9,6 +9,19 @@ struct Uniforms {
     maxDfsVisits: f32,
 };
 
+struct PixelState {
+    xy: vec4f,
+    zStatus: vec4f,
+};
+
+struct ComputedSample {
+    x: vec2f,
+    y: vec2f,
+    z: vec2f,
+    discriminant: vec2f,
+    isBqLike: bool,
+};
+
 struct BlitVertexOutput {
     @builtin(position) position: vec4f,
     @location(0) uv: vec2f,
@@ -16,6 +29,7 @@ struct BlitVertexOutput {
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var outputTexture: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var<storage, read_write> pixelStates: array<PixelState>;
 
 @group(1) @binding(0) var outputSampler: sampler;
 @group(1) @binding(1) var outputTextureForSampling: texture_2d<f32>;
@@ -206,7 +220,7 @@ fn bq_bounded(a: vec2f, b: vec2f, c: vec2f) -> bool {
         bq_dfs_bounded(sinkC, sinkB, sinkA);
 }
 
-fn computeColor(fragCoord: vec2f) -> vec4f {
+fn computeSample(fragCoord: vec2f) -> ComputedSample {
     let x = (fragCoord - uniforms.resolution * 0.5) / uniforms.scale + uniforms.offset;
     let y = uniforms.y;
 
@@ -215,6 +229,14 @@ fn computeColor(fragCoord: vec2f) -> vec4f {
     let xy = c_mul(x, y);
     let discriminant = c_mul(xy, xy) - 4.0 * (xx + yy);
     let z = 0.5 * (xy + c_sqrt(discriminant));
+
+    return ComputedSample(x, y, z, discriminant, bq_bounded(x, y, z));
+}
+
+fn computeColor(sample: ComputedSample) -> vec4f {
+    let x = sample.x;
+    let z = sample.z;
+    let discriminant = sample.discriminant;
 
     let mode = i32(uniforms.mode);
     var color = vec3f(0.0);
@@ -236,11 +258,17 @@ fn computeColor(fragCoord: vec2f) -> vec4f {
     } else if (mode == 4) {
         color = heat(h_bound(x), 0.01);
     } else {
-        let isBqLike = bq_bounded(x, y, z);
-        color = select(vec3f(1.0), vec3f(0.0), isBqLike);
+        color = select(vec3f(1.0), vec3f(0.0), sample.isBqLike);
     }
 
     return vec4f(color, 1.0);
+}
+
+fn buildPixelState(sample: ComputedSample) -> PixelState {
+    return PixelState(
+        vec4f(sample.x, sample.y),
+        vec4f(sample.z, select(0.0, 1.0, sample.isBqLike), 0.0),
+    );
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -250,7 +278,11 @@ fn cs_main(@builtin(global_invocation_id) globalId: vec3u) {
     }
 
     let pixelCoord = vec2f(globalId.xy) + vec2f(0.5, 0.5);
-    textureStore(outputTexture, vec2i(globalId.xy), computeColor(pixelCoord));
+    let stateIndex = globalId.y * u32(uniforms.resolution.x) + globalId.x;
+    let sample = computeSample(pixelCoord);
+    let pixelState = buildPixelState(sample);
+    pixelStates[stateIndex] = pixelState;
+    textureStore(outputTexture, vec2i(globalId.xy), computeColor(sample));
 }
 
 @vertex

@@ -4,6 +4,8 @@ const UNIFORM_FLOAT_COUNT = 12;
 const UNIFORM_BUFFER_SIZE = 64;
 const WORKGROUP_SIZE = 8;
 const OUTPUT_TEXTURE_FORMAT = 'rgba8unorm';
+const PIXEL_STATE_FLOAT_COUNT = 8;
+const PIXEL_STATE_STRIDE = PIXEL_STATE_FLOAT_COUNT * Float32Array.BYTES_PER_ELEMENT;
 
 function assertWebgpu() {
     if (!navigator.gpu) {
@@ -64,6 +66,7 @@ export async function createWebgpuRenderer({ canvas }) {
     let configuredHeight = 0;
     let outputTexture = null;
     let outputTextureView = null;
+    let pixelStateBuffer = null;
     let computeBindGroup = null;
     let blitBindGroup = null;
     let lastCpuRenderMs = 0;
@@ -83,6 +86,9 @@ export async function createWebgpuRenderer({ canvas }) {
         if (outputTexture) {
             outputTexture.destroy();
         }
+        if (pixelStateBuffer) {
+            pixelStateBuffer.destroy();
+        }
 
         outputTexture = device.createTexture({
             size: { width, height, depthOrArrayLayers: 1 },
@@ -93,12 +99,17 @@ export async function createWebgpuRenderer({ canvas }) {
                 GPUTextureUsage.COPY_SRC,
         });
         outputTextureView = outputTexture.createView();
+        pixelStateBuffer = device.createBuffer({
+            size: width * height * PIXEL_STATE_STRIDE,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+        });
 
         computeBindGroup = device.createBindGroup({
             layout: computePipeline.getBindGroupLayout(0),
             entries: [
                 { binding: 0, resource: { buffer: uniformBuffer } },
                 { binding: 1, resource: outputTextureView },
+                { binding: 2, resource: { buffer: pixelStateBuffer } },
             ],
         });
 
@@ -235,6 +246,42 @@ export async function createWebgpuRenderer({ canvas }) {
         return packed;
     }
 
+    async function readPixelState(state, x, y) {
+        ensureConfigured(state.width, state.height);
+        if (x < 0 || x >= state.width || y < 0 || y >= state.height) {
+            throw new Error(`Pixel coordinates out of range: (${x}, ${y})`);
+        }
+
+        const rowMajorIndex = y * state.width + x;
+        const offset = rowMajorIndex * PIXEL_STATE_STRIDE;
+        const outputBuffer = device.createBuffer({
+            size: PIXEL_STATE_STRIDE,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
+
+        writeUniforms(state);
+        const encoder = device.createCommandEncoder();
+        encodeComputePass(encoder, state);
+        encoder.copyBufferToBuffer(pixelStateBuffer, offset, outputBuffer, 0, PIXEL_STATE_STRIDE);
+        device.queue.submit([encoder.finish()]);
+
+        await device.queue.onSubmittedWorkDone();
+        await outputBuffer.mapAsync(GPUMapMode.READ);
+
+        const mapped = outputBuffer.getMappedRange();
+        const values = new Float32Array(mapped.slice(0));
+        outputBuffer.unmap();
+        outputBuffer.destroy();
+
+        return {
+            x: { real: values[0], imag: values[1] },
+            y: { real: values[2], imag: values[3] },
+            z: { real: values[4], imag: values[5] },
+            isBqLike: values[6] > 0.5,
+            reserved: values[7],
+        };
+    }
+
     return {
         setViewport(width, height) {
             ensureConfigured(width, height);
@@ -246,6 +293,7 @@ export async function createWebgpuRenderer({ canvas }) {
             return Promise.resolve();
         },
         readPixels,
+        readPixelState,
         getTiming() {
             return { lastCpuRenderMs, lastGpuRenderMs: null };
         },

@@ -171,6 +171,12 @@ function installAutomationApi() {
             };
         },
         exportPpm: async () => buildCurrentFramePpm(),
+        getPixelState: async (x, y) =>
+            renderer.readPixelState(
+                state,
+                Math.max(0, Math.min(state.width - 1, Math.round(x))),
+                Math.max(0, Math.min(state.height - 1, Math.round(y))),
+            ),
         getState,
         resetView: () => {
             state.offsetX = DEFAULT_VIEW.offsetX;
