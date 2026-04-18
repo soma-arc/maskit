@@ -10,6 +10,7 @@ const CLASSIFICATION_STATS_UINT_COUNT = 4;
 const CLASSIFICATION_STATS_BUFFER_SIZE =
     CLASSIFICATION_STATS_UINT_COUNT * Uint32Array.BYTES_PER_ELEMENT;
 const EMPTY_CLASSIFICATION_STATS = new Uint32Array(CLASSIFICATION_STATS_UINT_COUNT);
+const UNKNOWN_INDEX_STRIDE = Uint32Array.BYTES_PER_ELEMENT;
 
 function assertWebgpu() {
     if (!navigator.gpu) {
@@ -72,6 +73,7 @@ export async function createWebgpuRenderer({ canvas }) {
     let outputTextureView = null;
     let pixelStateBuffer = null;
     let classificationStatsBuffer = null;
+    let unknownIndexBuffer = null;
     let computeBindGroup = null;
     let blitBindGroup = null;
     let lastCpuRenderMs = 0;
@@ -97,6 +99,9 @@ export async function createWebgpuRenderer({ canvas }) {
         if (classificationStatsBuffer) {
             classificationStatsBuffer.destroy();
         }
+        if (unknownIndexBuffer) {
+            unknownIndexBuffer.destroy();
+        }
 
         outputTexture = device.createTexture({
             size: { width, height, depthOrArrayLayers: 1 },
@@ -115,6 +120,10 @@ export async function createWebgpuRenderer({ canvas }) {
             size: CLASSIFICATION_STATS_BUFFER_SIZE,
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
         });
+        unknownIndexBuffer = device.createBuffer({
+            size: width * height * UNKNOWN_INDEX_STRIDE,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+        });
 
         computeBindGroup = device.createBindGroup({
             layout: computePipeline.getBindGroupLayout(0),
@@ -123,6 +132,7 @@ export async function createWebgpuRenderer({ canvas }) {
                 { binding: 1, resource: outputTextureView },
                 { binding: 2, resource: { buffer: pixelStateBuffer } },
                 { binding: 3, resource: { buffer: classificationStatsBuffer } },
+                { binding: 4, resource: { buffer: unknownIndexBuffer } },
             ],
         });
 
@@ -339,6 +349,68 @@ export async function createWebgpuRenderer({ canvas }) {
         };
     }
 
+    async function readUnknownPixelIndices(state, limit = 256) {
+        ensureConfigured(state.width, state.height);
+
+        const statsReadBuffer = device.createBuffer({
+            size: CLASSIFICATION_STATS_BUFFER_SIZE,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
+        const unknownReadBuffer = device.createBuffer({
+            size: state.width * state.height * UNKNOWN_INDEX_STRIDE,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
+
+        writeUniforms(state);
+        device.queue.writeBuffer(classificationStatsBuffer, 0, EMPTY_CLASSIFICATION_STATS);
+
+        const encoder = device.createCommandEncoder();
+        encodeComputePass(encoder, state);
+        encoder.copyBufferToBuffer(
+            classificationStatsBuffer,
+            0,
+            statsReadBuffer,
+            0,
+            CLASSIFICATION_STATS_BUFFER_SIZE,
+        );
+        encoder.copyBufferToBuffer(
+            unknownIndexBuffer,
+            0,
+            unknownReadBuffer,
+            0,
+            state.width * state.height * UNKNOWN_INDEX_STRIDE,
+        );
+        device.queue.submit([encoder.finish()]);
+
+        await device.queue.onSubmittedWorkDone();
+        await Promise.all([
+            statsReadBuffer.mapAsync(GPUMapMode.READ),
+            unknownReadBuffer.mapAsync(GPUMapMode.READ),
+        ]);
+
+        const statsValues = new Uint32Array(statsReadBuffer.getMappedRange().slice(0));
+        const unknownCount = statsValues[2];
+        const rawIndices = new Uint32Array(unknownReadBuffer.getMappedRange().slice(0));
+        const clampedLimit = Math.max(0, Math.min(limit, unknownCount));
+        const indices = Array.from(rawIndices.subarray(0, clampedLimit)).map((index) => ({
+            index,
+            x: index % state.width,
+            y: Math.floor(index / state.width),
+        }));
+
+        statsReadBuffer.unmap();
+        statsReadBuffer.destroy();
+        unknownReadBuffer.unmap();
+        unknownReadBuffer.destroy();
+
+        return {
+            unknownCount,
+            returnedCount: indices.length,
+            truncated: clampedLimit < unknownCount,
+            indices,
+        };
+    }
+
     return {
         setViewport(width, height) {
             ensureConfigured(width, height);
@@ -352,6 +424,7 @@ export async function createWebgpuRenderer({ canvas }) {
         readPixels,
         readPixelState,
         readClassificationStats,
+        readUnknownPixelIndices,
         getTiming() {
             return { lastCpuRenderMs, lastGpuRenderMs: null };
         },

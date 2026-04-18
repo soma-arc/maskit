@@ -178,6 +178,8 @@ function installAutomationApi() {
                 Math.max(0, Math.min(state.height - 1, Math.round(y))),
             ),
         getClassificationStats: async () => renderer.readClassificationStats(state),
+        getUnknownPixelIndices: async (limit = 256) =>
+            renderer.readUnknownPixelIndices(state, Math.max(0, Math.round(limit))),
         getState,
         resetView: () => {
             state.offsetX = DEFAULT_VIEW.offsetX;

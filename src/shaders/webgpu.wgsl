@@ -38,6 +38,7 @@ struct BlitVertexOutput {
 @group(0) @binding(1) var outputTexture: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(2) var<storage, read_write> pixelStates: array<PixelState>;
 @group(0) @binding(3) var<storage, read_write> classificationStats: ClassificationStats;
+@group(0) @binding(4) var<storage, read_write> unknownIndices: array<u32>;
 
 @group(1) @binding(0) var outputSampler: sampler;
 @group(1) @binding(1) var outputTextureForSampling: texture_2d<f32>;
@@ -302,11 +303,12 @@ fn buildPixelState(sample: ComputedSample) -> PixelState {
     );
 }
 
-fn accumulateClassificationStats(statusCode: u32) {
+fn accumulateClassificationStats(statusCode: u32, stateIndex: u32) {
     if (statusCode == u32(BQ_TRUE)) {
         atomicAdd(&classificationStats.trueCount, 1u);
     } else if (statusCode == u32(BQ_UNKNOWN)) {
-        atomicAdd(&classificationStats.unknownCount, 1u);
+        let slot = atomicAdd(&classificationStats.unknownCount, 1u);
+        unknownIndices[slot] = stateIndex;
     } else {
         atomicAdd(&classificationStats.falseCount, 1u);
     }
@@ -323,7 +325,7 @@ fn cs_main(@builtin(global_invocation_id) globalId: vec3u) {
     let sample = computeSample(pixelCoord);
     let pixelState = buildPixelState(sample);
     pixelStates[stateIndex] = pixelState;
-    accumulateClassificationStats(u32(sample.statusCode));
+    accumulateClassificationStats(u32(sample.statusCode), stateIndex);
     textureStore(outputTexture, vec2i(globalId.xy), computeColor(sample));
 }
 
