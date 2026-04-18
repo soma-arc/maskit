@@ -94,9 +94,8 @@ async function main() {
     const referenceMask = toBinaryMask(reference);
     const candidateMask = toBinaryMask(candidate);
     const refined = refineUnknownMask(rendered.state, candidateMask, rendered.allUnknownPixels.indices, {
-      maxSinkIters: 8192,
-      maxDepth: 4096,
-      maxVisits: 4_000_000,
+      maxSinkIters: 1_000_000,
+      maxDepth: 995,
     });
 
     comparedOutputPath = path.join(compareDir, 'cpu-refined.pbm');

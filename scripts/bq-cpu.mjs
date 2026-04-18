@@ -48,12 +48,12 @@ function isBq1Failure(z) {
   return Math.abs(z.im) <= 1e-10 && z.re >= -2 && z.re <= 2;
 }
 
-function sinkToLocalMinimum(a0, b0, c0, maxSinkIters = 4096) {
+function sinkToLocalMinimum(a0, b0, c0, maxSinkIters = 1_000_000) {
   let a = a0;
   let b = b0;
   let c = c0;
 
-  if (cAbs2(a) < 0.25 || cAbs2(b) < 0.25 || cAbs2(c) < 0.25) {
+  if (cAbs(a) < 0.5 || cAbs(b) < 0.5 || cAbs(c) < 0.5) {
     return { status: 'false' };
   }
 
@@ -62,23 +62,23 @@ function sinkToLocalMinimum(a0, b0, c0, maxSinkIters = 4096) {
     const B = cSub(cMul(c, a), b);
     const C = cSub(cMul(a, b), c);
 
-    const absA2 = cAbs2(A);
-    const absB2 = cAbs2(B);
-    const absC2 = cAbs2(C);
+    const absA = cAbs(A);
+    const absB = cAbs(B);
+    const absC = cAbs(C);
 
-    if (absA2 < 0.25 || absB2 < 0.25 || absC2 < 0.25) {
+    if (absA < 0.5 || absB < 0.5 || absC < 0.5) {
       return { status: 'false' };
     }
 
-    if (absA2 < cAbs2(a)) {
+    if (absA < cAbs(a)) {
       a = A;
       continue;
     }
-    if (absB2 < cAbs2(b)) {
+    if (absB < cAbs(b)) {
       b = B;
       continue;
     }
-    if (absC2 < cAbs2(c)) {
+    if (absC < cAbs(c)) {
       c = C;
       continue;
     }
@@ -89,37 +89,23 @@ function sinkToLocalMinimum(a0, b0, c0, maxSinkIters = 4096) {
   return { status: 'giveup' };
 }
 
-function bqDfs(a0, b0, c0, options = {}) {
-  const maxDepth = options.maxDepth ?? 995;
-  const maxVisits = options.maxVisits ?? 1_000_000;
-  const stack = [{ a: a0, b: b0, c: c0, depth: 0 }];
-  let visits = 0;
+function bqDfs(a, b, c, depth, state) {
+  state.visits += 1;
+  if (state.visits > state.maxVisits) return true;
+  if (depth > state.maxDepth) return true;
+  if (isBq1Failure(b) || isBq1Failure(c)) return false;
 
-  while (stack.length > 0) {
-    visits += 1;
-    if (visits > maxVisits) return true;
+  const absb = cAbs(b);
+  const absc = cAbs(c);
+  const inTree =
+    (absb <= 3 && absc <= hBound(b) + 1) ||
+    (absc <= 3 && absb <= hBound(c) + 1);
+  if (!inTree) return true;
 
-    const { a, b, c, depth } = stack.pop();
-    if (depth > maxDepth) return true;
-    if (isBq1Failure(b) || isBq1Failure(c)) return false;
+  const d = cSub(cMul(b, c), a);
+  if (cAbs(d) < 0.5) return false;
 
-    const absb2 = cAbs2(b);
-    const absc2 = cAbs2(c);
-    const hBoundB = hBound(b) + 1;
-    const hBoundC = hBound(c) + 1;
-    const inTree =
-      (absb2 <= 9 && absc2 <= hBoundB * hBoundB) ||
-      (absc2 <= 9 && absb2 <= hBoundC * hBoundC);
-    if (!inTree) continue;
-
-    const d = cSub(cMul(b, c), a);
-    if (cAbs2(d) < 0.25) return false;
-
-    stack.push({ a: c, b, c: d, depth: depth + 1 });
-    stack.push({ a: b, b: c, c: d, depth: depth + 1 });
-  }
-
-  return true;
+  return bqDfs(b, c, d, depth + 1, state) && bqDfs(c, b, d, depth + 1, state);
 }
 
 export function evaluateBqPixel(renderState, index, options = {}) {
@@ -143,10 +129,16 @@ export function evaluateBqPixel(renderState, index, options = {}) {
   if (sink.status === 'false') return false;
   if (sink.status === 'giveup') return true;
 
+  const createDfsState = () => ({
+    maxDepth: options.maxDepth ?? 995,
+    maxVisits: options.maxVisits ?? Number.POSITIVE_INFINITY,
+    visits: 0,
+  });
+
   return (
-    bqDfs(sink.a, sink.b, sink.c, options) &&
-    bqDfs(sink.b, sink.c, sink.a, options) &&
-    bqDfs(sink.c, sink.b, sink.a, options)
+    bqDfs(sink.a, sink.b, sink.c, 0, createDfsState()) &&
+    bqDfs(sink.b, sink.c, sink.a, 0, createDfsState()) &&
+    bqDfs(sink.c, sink.b, sink.a, 0, createDfsState())
   );
 }
 
