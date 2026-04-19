@@ -42,6 +42,8 @@ const hybridFrame = {
     signature: null,
     exportPpm: null,
     refinement: null,
+    unknownPixels: null,
+    resolvedValues: null,
 };
 
 hybridWorker.addEventListener('message', (event) => {
@@ -188,6 +190,22 @@ function buildPpmFromBinaryMask(width, height, mask) {
     return `${lines.join('\n')}\n`;
 }
 
+function applyResolvedUnknownValuesToMask(
+    width,
+    height,
+    candidateMask,
+    unknownPixels,
+    resolvedValues,
+) {
+    const refinedMask = new Uint8Array(candidateMask);
+    for (let index = 0; index < unknownPixels.length; index += 1) {
+        const pixel = unknownPixels[index];
+        const maskIndex = (height - 1 - pixel.y) * width + pixel.x;
+        refinedMask[maskIndex] = resolvedValues[index];
+    }
+    return refinedMask;
+}
+
 function runHybridWorkerJob(payload, transferList = []) {
     const requestId = hybridWorkerRequestId;
     hybridWorkerRequestId += 1;
@@ -205,20 +223,6 @@ function resolveUnknownPixelsInWorker(renderState, unknownPixels, options) {
         unknownPixels,
         options,
     });
-}
-
-function refineUnknownMaskInWorker(renderState, candidateMask, unknownPixels, options) {
-    const candidateMaskBuffer = candidateMask.buffer.slice(0);
-    return runHybridWorkerJob(
-        {
-            action: 'refineUnknownMask',
-            renderState,
-            candidateMaskBuffer,
-            unknownPixels,
-            options,
-        },
-        [candidateMaskBuffer],
-    );
 }
 
 function drawHybridFrame(width, height, pixels) {
@@ -267,27 +271,39 @@ async function buildHybridOverlayFrame(viewState) {
             resolvedTrue: refined.resolvedTrue,
             resolvedFalse: refined.resolvedFalse,
         },
+        unknownPixels: unknownPayload.indices,
+        resolvedValues: refined.resolvedValues,
     };
 }
 
 async function buildHybridExportPpm(viewState) {
     const renderState = getRendererState(viewState);
-    const [pixels, unknownPayload] = await Promise.all([
-        renderer.readPixels(renderState),
-        renderer.readUnknownPixelIndices(renderState, renderState.width * renderState.height),
-    ]);
+    const pixels = await renderer.readPixels(renderState);
     const candidateMask = buildBinaryMaskFromRgba(renderState.width, renderState.height, pixels);
-    const refined = await refineUnknownMaskInWorker(
-        renderState,
-        candidateMask,
-        unknownPayload.indices,
-        {
-            maxSinkIters: 1_000_000,
-            maxDepth: 995,
-        },
-    );
 
-    return buildPpmFromBinaryMask(renderState.width, renderState.height, refined.refinedMask);
+    const signature = getHybridSignature(viewState);
+    let unknownPixels = hybridFrame.unknownPixels;
+    let resolvedValues = hybridFrame.resolvedValues;
+    if (hybridFrame.signature !== signature || !unknownPixels || !resolvedValues) {
+        const overlayFrame = await buildHybridOverlayFrame(viewState);
+        unknownPixels = overlayFrame.unknownPixels;
+        resolvedValues = overlayFrame.resolvedValues;
+        hybridFrame.signature = overlayFrame.signature;
+        hybridFrame.refinement = overlayFrame.refinement;
+        hybridFrame.unknownPixels = overlayFrame.unknownPixels;
+        hybridFrame.resolvedValues = overlayFrame.resolvedValues;
+        drawHybridFrame(state.width, state.height, overlayFrame.pixels);
+        syncHybridCanvasVisibility();
+    }
+
+    const refinedMask = applyResolvedUnknownValuesToMask(
+        renderState.width,
+        renderState.height,
+        candidateMask,
+        unknownPixels,
+        resolvedValues,
+    );
+    return buildPpmFromBinaryMask(renderState.width, renderState.height, refinedMask);
 }
 
 async function ensureHybridFrame(force = false) {
@@ -306,6 +322,8 @@ async function ensureHybridFrame(force = false) {
     hybridFrame.signature = nextFrame.signature;
     hybridFrame.exportPpm = null;
     hybridFrame.refinement = nextFrame.refinement;
+    hybridFrame.unknownPixels = nextFrame.unknownPixels;
+    hybridFrame.resolvedValues = nextFrame.resolvedValues;
     drawHybridFrame(state.width, state.height, nextFrame.pixels);
     syncHybridCanvasVisibility();
     setStatusMessage(
@@ -345,6 +363,8 @@ function applyResolution() {
     hybridFrame.signature = null;
     hybridFrame.exportPpm = null;
     hybridFrame.refinement = null;
+    hybridFrame.unknownPixels = null;
+    hybridFrame.resolvedValues = null;
     syncHybridCanvasVisibility();
     setStatusMessage('canvas display size matches the render buffer');
 }

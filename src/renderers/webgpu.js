@@ -443,10 +443,6 @@ export async function createWebgpuRenderer({ canvas }) {
             size: CLASSIFICATION_STATS_BUFFER_SIZE,
             usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
         });
-        const unknownReadBuffer = device.createBuffer({
-            size: state.width * state.height * UNKNOWN_INDEX_STRIDE,
-            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-        });
 
         const encoder = device.createCommandEncoder();
         writeUniforms(state);
@@ -462,35 +458,46 @@ export async function createWebgpuRenderer({ canvas }) {
             0,
             CLASSIFICATION_STATS_BUFFER_SIZE,
         );
-        encoder.copyBufferToBuffer(
-            unknownIndexBuffer,
-            0,
-            unknownReadBuffer,
-            0,
-            state.width * state.height * UNKNOWN_INDEX_STRIDE,
-        );
         device.queue.submit([encoder.finish()]);
 
         await device.queue.onSubmittedWorkDone();
-        await Promise.all([
-            statsReadBuffer.mapAsync(GPUMapMode.READ),
-            unknownReadBuffer.mapAsync(GPUMapMode.READ),
-        ]);
+        await statsReadBuffer.mapAsync(GPUMapMode.READ);
 
         const statsValues = new Uint32Array(statsReadBuffer.getMappedRange().slice(0));
         const unknownCount = statsValues[2];
-        const rawIndices = new Uint32Array(unknownReadBuffer.getMappedRange().slice(0));
         const clampedLimit = Math.max(0, Math.min(limit, unknownCount));
-        const indices = Array.from(rawIndices.subarray(0, clampedLimit)).map((index) => ({
-            index,
-            x: index % state.width,
-            y: Math.floor(index / state.width),
-        }));
-
         statsReadBuffer.unmap();
         statsReadBuffer.destroy();
-        unknownReadBuffer.unmap();
-        unknownReadBuffer.destroy();
+
+        let indices = [];
+        if (clampedLimit > 0) {
+            const unknownReadBuffer = device.createBuffer({
+                size: clampedLimit * UNKNOWN_INDEX_STRIDE,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+            });
+            const unknownEncoder = device.createCommandEncoder();
+            unknownEncoder.copyBufferToBuffer(
+                unknownIndexBuffer,
+                0,
+                unknownReadBuffer,
+                0,
+                clampedLimit * UNKNOWN_INDEX_STRIDE,
+            );
+            device.queue.submit([unknownEncoder.finish()]);
+
+            await device.queue.onSubmittedWorkDone();
+            await unknownReadBuffer.mapAsync(GPUMapMode.READ);
+
+            const rawIndices = new Uint32Array(unknownReadBuffer.getMappedRange().slice(0));
+            indices = Array.from(rawIndices).map((index) => ({
+                index,
+                x: index % state.width,
+                y: Math.floor(index / state.width),
+            }));
+
+            unknownReadBuffer.unmap();
+            unknownReadBuffer.destroy();
+        }
 
         return {
             unknownCount,
