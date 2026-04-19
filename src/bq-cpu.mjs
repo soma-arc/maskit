@@ -139,14 +139,21 @@ export function evaluateBqPixel(renderState, index, options = {}) {
     );
 }
 
+function getUnknownPixelIndex(entry) {
+    return typeof entry === 'number' ? entry : entry.index;
+}
+
 export function refineUnknownMask(renderState, candidateMask, unknownPixels, options = {}) {
     const refinedMask = new Uint8Array(candidateMask);
     let resolvedTrue = 0;
     let resolvedFalse = 0;
 
     for (const pixel of unknownPixels) {
-        const targetIndex = (renderState.height - 1 - pixel.y) * renderState.width + pixel.x;
-        const nextValue = evaluateBqPixel(renderState, pixel.index, options) ? 1 : 0;
+        const index = getUnknownPixelIndex(pixel);
+        const x = index % renderState.width;
+        const y = Math.floor(index / renderState.width);
+        const targetIndex = (renderState.height - 1 - y) * renderState.width + x;
+        const nextValue = evaluateBqPixel(renderState, index, options) ? 1 : 0;
         refinedMask[targetIndex] = nextValue;
         if (nextValue === 1) {
             resolvedTrue += 1;

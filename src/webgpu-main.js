@@ -16,6 +16,7 @@ import {
 const GPU_COMPARE_MODE = 5;
 const HYBRID_COMPARE_MODE = 7;
 const UNKNOWN_HIGHLIGHT_MODE = 6;
+const HYBRID_SETTLE_DELAY_MS = 120;
 
 const elements = getViewerElements();
 const { canvas, hybridCanvas } = elements;
@@ -35,6 +36,7 @@ let hybridRefreshPending = false;
 let hybridWorkerRequestId = 0;
 let renderScheduled = false;
 let lastRenderTimestamp = 0;
+let hybridSettleTimerId = null;
 
 const hybridWorkerRequests = new Map();
 
@@ -42,8 +44,9 @@ const hybridFrame = {
     signature: null,
     exportPpm: null,
     refinement: null,
-    unknownPixels: null,
+    unknownIndices: null,
     resolvedValues: null,
+    timing: null,
 };
 
 hybridWorker.addEventListener('message', (event) => {
@@ -150,6 +153,15 @@ function hideHybridCanvas() {
     hybridContext.clearRect(0, 0, hybridCanvas.width, hybridCanvas.height);
 }
 
+function invalidateHybridFrame() {
+    hybridFrame.signature = null;
+    hybridFrame.exportPpm = null;
+    hybridFrame.refinement = null;
+    hybridFrame.unknownIndices = null;
+    hybridFrame.resolvedValues = null;
+    hybridFrame.timing = null;
+}
+
 function syncHybridCanvasVisibility() {
     const shouldShow =
         isHybridRefineEnabled(state) &&
@@ -194,13 +206,15 @@ function applyResolvedUnknownValuesToMask(
     width,
     height,
     candidateMask,
-    unknownPixels,
+    unknownIndices,
     resolvedValues,
 ) {
     const refinedMask = new Uint8Array(candidateMask);
-    for (let index = 0; index < unknownPixels.length; index += 1) {
-        const pixel = unknownPixels[index];
-        const maskIndex = (height - 1 - pixel.y) * width + pixel.x;
+    for (let index = 0; index < unknownIndices.length; index += 1) {
+        const rowMajorIndex = unknownIndices[index];
+        const x = rowMajorIndex % width;
+        const y = Math.floor(rowMajorIndex / width);
+        const maskIndex = (height - 1 - y) * width + x;
         refinedMask[maskIndex] = resolvedValues[index];
     }
     return refinedMask;
@@ -216,11 +230,11 @@ function runHybridWorkerJob(payload, transferList = []) {
     });
 }
 
-function resolveUnknownPixelsInWorker(renderState, unknownPixels, options) {
+function resolveUnknownPixelsInWorker(renderState, unknownIndices, options) {
     return runHybridWorkerJob({
         action: 'resolveUnknownPixels',
         renderState,
-        unknownPixels,
+        unknownIndicesBuffer: unknownIndices.buffer,
         options,
     });
 }
@@ -231,12 +245,14 @@ function drawHybridFrame(width, height, pixels) {
     hybridCanvas.style.display = 'block';
 }
 
-function buildUnknownOverlayFromResolvedValues(width, height, resolvedValues, unknownPixels) {
+function buildUnknownOverlayFromResolvedValues(width, height, resolvedValues, unknownIndices) {
     const pixels = new Uint8Array(width * height * 4);
-    for (let index = 0; index < unknownPixels.length; index += 1) {
+    for (let index = 0; index < unknownIndices.length; index += 1) {
         const channel = resolvedValues[index] === 1 ? 0 : 255;
-        const pixel = unknownPixels[index];
-        const rgbaIndex = (pixel.y * width + pixel.x) * 4;
+        const rowMajorIndex = unknownIndices[index];
+        const x = rowMajorIndex % width;
+        const y = Math.floor(rowMajorIndex / width);
+        const rgbaIndex = (y * width + x) * 4;
         pixels[rgbaIndex] = channel;
         pixels[rgbaIndex + 1] = channel;
         pixels[rgbaIndex + 2] = channel;
@@ -247,20 +263,38 @@ function buildUnknownOverlayFromResolvedValues(width, height, resolvedValues, un
 
 async function buildHybridOverlayFrame(viewState) {
     const renderState = getRendererState(viewState);
-    const unknownPayload = await renderer.readUnknownPixelIndices(
-        renderState,
-        renderState.width * renderState.height,
-    );
+    const unknownPayload = isAutomation
+        ? await renderer.measureHybridUnknownPass(renderState, {
+              presentToCanvas: false,
+          })
+        : await renderer.readUnknownPixelIndexBufferSinglePass(renderState, {
+              presentToCanvas: true,
+          });
+    const unknownReadbackMs =
+        (unknownPayload.timing?.classifySubmitMs ?? 0) +
+        (unknownPayload.timing?.classifyWaitMs ?? 0) +
+        (unknownPayload.timing?.refineSubmitMs ?? 0) +
+        (unknownPayload.timing?.refineWaitMs ?? 0) +
+        (unknownPayload.timing?.finalizeSubmitMs ?? 0) +
+        (unknownPayload.timing?.finalizeWaitMs ?? 0) +
+        (unknownPayload.timing?.statsMapMs ?? 0) +
+        (unknownPayload.timing?.unknownMapMs ?? 0);
+
+    const workerRefineStart = performance.now();
     const refined = await resolveUnknownPixelsInWorker(renderState, unknownPayload.indices, {
         maxSinkIters: 1_000_000,
         maxDepth: 995,
     });
+    const workerRefineMs = performance.now() - workerRefineStart;
+
+    const overlayComposeStart = performance.now();
     const hybridPixels = buildUnknownOverlayFromResolvedValues(
         renderState.width,
         renderState.height,
         refined.resolvedValues,
         unknownPayload.indices,
     );
+    const overlayComposeMs = performance.now() - overlayComposeStart;
 
     return {
         signature: getHybridSignature(renderState),
@@ -271,26 +305,45 @@ async function buildHybridOverlayFrame(viewState) {
             resolvedTrue: refined.resolvedTrue,
             resolvedFalse: refined.resolvedFalse,
         },
-        unknownPixels: unknownPayload.indices,
+        unknownIndices: unknownPayload.indices,
         resolvedValues: refined.resolvedValues,
+        timing: {
+            unknownReadbackMs,
+            workerRefineMs,
+            overlayComposeMs,
+            exportReadbackMs: 0,
+            exportComposeMs: 0,
+            classifySubmitMs: unknownPayload.timing?.classifySubmitMs ?? 0,
+            classifyWaitMs: unknownPayload.timing?.classifyWaitMs ?? 0,
+            refineSubmitMs: unknownPayload.timing?.refineSubmitMs ?? 0,
+            refineWaitMs: unknownPayload.timing?.refineWaitMs ?? 0,
+            finalizeSubmitMs: unknownPayload.timing?.finalizeSubmitMs ?? 0,
+            finalizeWaitMs: unknownPayload.timing?.finalizeWaitMs ?? 0,
+            statsMapMs: unknownPayload.timing?.statsMapMs ?? 0,
+            unknownMapMs: unknownPayload.timing?.unknownMapMs ?? 0,
+        },
     };
 }
 
 async function buildHybridExportPpm(viewState) {
     const renderState = getRendererState(viewState);
+    const exportReadbackStart = performance.now();
     const pixels = await renderer.readPixels(renderState);
+    const exportReadbackMs = performance.now() - exportReadbackStart;
+
+    const exportComposeStart = performance.now();
     const candidateMask = buildBinaryMaskFromRgba(renderState.width, renderState.height, pixels);
 
     const signature = getHybridSignature(viewState);
-    let unknownPixels = hybridFrame.unknownPixels;
+    let unknownIndices = hybridFrame.unknownIndices;
     let resolvedValues = hybridFrame.resolvedValues;
-    if (hybridFrame.signature !== signature || !unknownPixels || !resolvedValues) {
+    if (hybridFrame.signature !== signature || !unknownIndices || !resolvedValues) {
         const overlayFrame = await buildHybridOverlayFrame(viewState);
-        unknownPixels = overlayFrame.unknownPixels;
+        unknownIndices = overlayFrame.unknownIndices;
         resolvedValues = overlayFrame.resolvedValues;
         hybridFrame.signature = overlayFrame.signature;
         hybridFrame.refinement = overlayFrame.refinement;
-        hybridFrame.unknownPixels = overlayFrame.unknownPixels;
+        hybridFrame.unknownIndices = overlayFrame.unknownIndices;
         hybridFrame.resolvedValues = overlayFrame.resolvedValues;
         drawHybridFrame(state.width, state.height, overlayFrame.pixels);
         syncHybridCanvasVisibility();
@@ -300,10 +353,21 @@ async function buildHybridExportPpm(viewState) {
         renderState.width,
         renderState.height,
         candidateMask,
-        unknownPixels,
+        unknownIndices,
         resolvedValues,
     );
-    return buildPpmFromBinaryMask(renderState.width, renderState.height, refinedMask);
+    const ppm = buildPpmFromBinaryMask(renderState.width, renderState.height, refinedMask);
+    const exportComposeMs = performance.now() - exportComposeStart;
+
+    hybridFrame.timing = {
+        unknownReadbackMs: hybridFrame.timing?.unknownReadbackMs ?? 0,
+        workerRefineMs: hybridFrame.timing?.workerRefineMs ?? 0,
+        overlayComposeMs: hybridFrame.timing?.overlayComposeMs ?? 0,
+        exportReadbackMs,
+        exportComposeMs,
+    };
+
+    return ppm;
 }
 
 async function ensureHybridFrame(force = false) {
@@ -322,9 +386,18 @@ async function ensureHybridFrame(force = false) {
     hybridFrame.signature = nextFrame.signature;
     hybridFrame.exportPpm = null;
     hybridFrame.refinement = nextFrame.refinement;
-    hybridFrame.unknownPixels = nextFrame.unknownPixels;
+    hybridFrame.unknownIndices = nextFrame.unknownIndices;
     hybridFrame.resolvedValues = nextFrame.resolvedValues;
+    hybridFrame.timing = nextFrame.timing;
     drawHybridFrame(state.width, state.height, nextFrame.pixels);
+    if (!isAutomation) {
+        const now = performance.now();
+        if (lastRenderTimestamp > 0) {
+            const deltaMs = now - lastRenderTimestamp;
+            fps = deltaMs > 0 ? 1000 / deltaMs : 0;
+        }
+        lastRenderTimestamp = now;
+    }
     syncHybridCanvasVisibility();
     setStatusMessage(
         `hybrid: refined ${nextFrame.refinement.refinedPixelCount} unresolved pixels (${nextFrame.refinement.resolvedTrue} -> true, ${nextFrame.refinement.resolvedFalse} -> false)`,
@@ -355,6 +428,23 @@ function requestHybridRefresh() {
     }
 }
 
+function clearHybridSettleTimer() {
+    if (hybridSettleTimerId != null) {
+        window.clearTimeout(hybridSettleTimerId);
+        hybridSettleTimerId = null;
+    }
+}
+
+function scheduleHybridRefreshAfterDelay() {
+    clearHybridSettleTimer();
+    hybridSettleTimerId = window.setTimeout(() => {
+        hybridSettleTimerId = null;
+        if (isHybridRefineEnabled(state)) {
+            requestHybridRefresh();
+        }
+    }, HYBRID_SETTLE_DELAY_MS);
+}
+
 function applyResolution() {
     syncInputsWithState(elements, state);
     applyCanvasResolution(canvas, state.width, state.height);
@@ -363,17 +453,27 @@ function applyResolution() {
     hybridFrame.signature = null;
     hybridFrame.exportPpm = null;
     hybridFrame.refinement = null;
-    hybridFrame.unknownPixels = null;
+    hybridFrame.unknownIndices = null;
     hybridFrame.resolvedValues = null;
+    hybridFrame.timing = null;
     syncHybridCanvasVisibility();
     setStatusMessage('canvas display size matches the render buffer');
 }
 
-function requestHybridRefreshIfNeeded() {
-    scheduleRender();
+function requestHybridRefreshIfNeeded({ deferHybrid = false } = {}) {
     if (isHybridRefineEnabled(state)) {
-        requestHybridRefresh();
+        invalidateHybridFrame();
+        hideHybridCanvas();
+        scheduleRender();
+        if (deferHybrid) {
+            scheduleHybridRefreshAfterDelay();
+        } else {
+            clearHybridSettleTimer();
+            requestHybridRefresh();
+        }
     } else {
+        clearHybridSettleTimer();
+        scheduleRender();
         syncHybridCanvasVisibility();
     }
 }
@@ -397,7 +497,12 @@ canvas.addEventListener('mousedown', (event) => {
 });
 
 window.addEventListener('mouseup', () => {
+    const wasDragging = dragging;
     dragging = false;
+    if (wasDragging && isHybridRefineEnabled(state)) {
+        clearHybridSettleTimer();
+        requestHybridRefresh();
+    }
 });
 
 window.addEventListener('mousemove', (event) => {
@@ -407,7 +512,7 @@ window.addEventListener('mousemove', (event) => {
     state.offsetY -= dy / state.scale;
     lastX = event.clientX;
     lastY = event.clientY;
-    requestHybridRefreshIfNeeded();
+    requestHybridRefreshIfNeeded({ deferHybrid: true });
     updateStatus();
 });
 
@@ -417,7 +522,7 @@ canvas.addEventListener(
         event.preventDefault();
         const factor = event.deltaY < 0 ? 1.1 : 1 / 1.1;
         state.scale *= factor;
-        requestHybridRefreshIfNeeded();
+        requestHybridRefreshIfNeeded({ deferHybrid: true });
         updateStatus();
     },
     { passive: false },
@@ -513,6 +618,7 @@ function getState() {
         ...state,
         ...renderer.getTiming(),
         hybrid: hybridFrame.refinement,
+        hybridTiming: hybridFrame.timing,
     };
 }
 

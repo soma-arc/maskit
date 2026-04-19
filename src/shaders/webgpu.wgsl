@@ -215,10 +215,15 @@ fn bq_dfs_bounded_result(
 
         let absb2 = c_abs2(currentB);
         let absc2 = c_abs2(currentC);
-        let hBoundB = h_bound(currentB) + 1.0;
-        let hBoundC = h_bound(currentC) + 1.0;
-        let inTree = (absb2 <= 9.0 && absc2 <= hBoundB * hBoundB) ||
-            (absc2 <= 9.0 && absb2 <= hBoundC * hBoundC);
+        var inTree = false;
+        if (absb2 <= 9.0) {
+            let hBoundB = h_bound(currentB) + 1.0;
+            inTree = absc2 <= hBoundB * hBoundB;
+        }
+        if (!inTree && absc2 <= 9.0) {
+            let hBoundC = h_bound(currentC) + 1.0;
+            inTree = absb2 <= hBoundC * hBoundC;
+        }
         if (!inTree) {
             if (stackSize <= 0) {
                 return BQ_TRUE;
@@ -277,24 +282,24 @@ fn bq_bounded_result(
     let sinkC = sink[3];
 
     let result1 = bq_dfs_bounded_result(sinkA, sinkB, sinkC, maxDfsDepth, maxDfsVisits);
-    let result2 = bq_dfs_bounded_result(sinkB, sinkC, sinkA, maxDfsDepth, maxDfsVisits);
-    let result3 = bq_dfs_bounded_result(sinkC, sinkB, sinkA, maxDfsDepth, maxDfsVisits);
-
-    if (result1 == BQ_FALSE || result2 == BQ_FALSE || result3 == BQ_FALSE) {
+    if (result1 == BQ_FALSE) {
         return BQ_FALSE;
     }
-    if (
-        result1 == BQ_UNKNOWN_STACK ||
-        result2 == BQ_UNKNOWN_STACK ||
-        result3 == BQ_UNKNOWN_STACK
-    ) {
+
+    let result2 = bq_dfs_bounded_result(sinkB, sinkC, sinkA, maxDfsDepth, maxDfsVisits);
+    if (result2 == BQ_FALSE) {
+        return BQ_FALSE;
+    }
+
+    let result3 = bq_dfs_bounded_result(sinkC, sinkB, sinkA, maxDfsDepth, maxDfsVisits);
+    if (result3 == BQ_FALSE) {
+        return BQ_FALSE;
+    }
+
+    if (result1 == BQ_UNKNOWN_STACK || result2 == BQ_UNKNOWN_STACK || result3 == BQ_UNKNOWN_STACK) {
         return BQ_UNKNOWN_STACK;
     }
-    if (
-        result1 == BQ_UNKNOWN_DFS_LIMIT ||
-        result2 == BQ_UNKNOWN_DFS_LIMIT ||
-        result3 == BQ_UNKNOWN_DFS_LIMIT
-    ) {
+    if (result1 == BQ_UNKNOWN_DFS_LIMIT || result2 == BQ_UNKNOWN_DFS_LIMIT || result3 == BQ_UNKNOWN_DFS_LIMIT) {
         return BQ_UNKNOWN_DFS_LIMIT;
     }
     return BQ_TRUE;

@@ -125,6 +125,23 @@ export async function createWebgpuRenderer({ canvas }) {
     let computeBindGroup = null;
     let blitBindGroup = null;
     let lastCpuRenderMs = 0;
+    let lastComputedSignature = null;
+
+    function buildStateSignature(state) {
+        return JSON.stringify({
+            width: state.width,
+            height: state.height,
+            offsetX: state.offsetX,
+            offsetY: state.offsetY,
+            yReal: state.yReal,
+            yImag: state.yImag,
+            scale: state.scale,
+            mode: state.mode,
+            maxSinkIters: state.maxSinkIters,
+            maxDfsDepth: state.maxDfsDepth,
+            maxDfsVisits: state.maxDfsVisits,
+        });
+    }
 
     function configureContext(width, height) {
         context.configure({
@@ -172,7 +189,6 @@ export async function createWebgpuRenderer({ canvas }) {
             size: width * height * UNKNOWN_INDEX_STRIDE,
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
         });
-
         computeBindGroup = device.createBindGroup({
             layout: computeBindGroupLayout,
             entries: [
@@ -197,6 +213,7 @@ export async function createWebgpuRenderer({ canvas }) {
         if (width === configuredWidth && height === configuredHeight && outputTexture) return;
         configureContext(width, height);
         recreateOutputResources(width, height);
+        lastComputedSignature = null;
     }
 
     function writeUniforms(state) {
@@ -262,17 +279,24 @@ export async function createWebgpuRenderer({ canvas }) {
         renderPass.end();
     }
 
-    function submitRender(state, { presentToCanvas = true, copyBuffer = null } = {}) {
-        ensureConfigured(state.width, state.height);
-        writeUniforms(state);
-
-        const encoder = device.createCommandEncoder();
+    function encodeComputePasses(encoder, state) {
         encoder.clearBuffer(classificationStatsBuffer);
         encodeClassificationPass(encoder, state);
         encodeUnknownRefinementPass(encoder, state);
         encoder.clearBuffer(classificationStatsBuffer);
         encodeFinalizePass(encoder, state);
+    }
 
+    function encodeOutputCopies(
+        encoder,
+        state,
+        {
+            presentToCanvas = false,
+            copyBuffer = null,
+            copyUnknownIndices = null,
+            copyStats = null,
+        } = {},
+    ) {
         if (presentToCanvas) {
             encodeBlitPass(encoder, context.getCurrentTexture().createView());
         }
@@ -289,7 +313,86 @@ export async function createWebgpuRenderer({ canvas }) {
             );
         }
 
+        if (copyUnknownIndices) {
+            encoder.copyBufferToBuffer(
+                unknownIndexBuffer,
+                0,
+                copyUnknownIndices.buffer,
+                0,
+                copyUnknownIndices.size,
+            );
+        }
+
+        if (copyStats) {
+            encoder.copyBufferToBuffer(
+                classificationStatsBuffer,
+                0,
+                copyStats.buffer,
+                0,
+                CLASSIFICATION_STATS_BUFFER_SIZE,
+            );
+        }
+    }
+
+    async function submitAndWait(encoder) {
+        const submitStart = performance.now();
         device.queue.submit([encoder.finish()]);
+        const submitMs = performance.now() - submitStart;
+
+        const waitStart = performance.now();
+        await device.queue.onSubmittedWorkDone();
+        const waitMs = performance.now() - waitStart;
+
+        return { submitMs, waitMs };
+    }
+
+    function submitRender(
+        state,
+        {
+            presentToCanvas = true,
+            copyBuffer = null,
+            copyUnknownIndices = null,
+            copyStats = null,
+        } = {},
+    ) {
+        ensureConfigured(state.width, state.height);
+        writeUniforms(state);
+
+        const encoder = device.createCommandEncoder();
+        encodeComputePasses(encoder, state);
+        encodeOutputCopies(encoder, state, {
+            presentToCanvas,
+            copyBuffer,
+            copyUnknownIndices,
+            copyStats,
+        });
+
+        device.queue.submit([encoder.finish()]);
+        lastComputedSignature = buildStateSignature(state);
+    }
+
+    function submitReusePass(
+        state,
+        {
+            presentToCanvas = false,
+            copyBuffer = null,
+            copyUnknownIndices = null,
+            copyStats = null,
+        } = {},
+    ) {
+        ensureConfigured(state.width, state.height);
+        const encoder = device.createCommandEncoder();
+        encodeOutputCopies(encoder, state, {
+            presentToCanvas,
+            copyBuffer,
+            copyUnknownIndices,
+            copyStats,
+        });
+        device.queue.submit([encoder.finish()]);
+    }
+
+    function hasComputedState(state) {
+        return lastComputedSignature === buildStateSignature(state);
     }
 
     function render(state) {
@@ -312,13 +415,22 @@ export async function createWebgpuRenderer({ canvas }) {
             usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
         });
 
-        submitRender(state, {
-            presentToCanvas: false,
-            copyBuffer: {
-                buffer: outputBuffer,
-                bytesPerRow: paddedBytesPerRow,
-            },
-        });
+        if (hasComputedState(state)) {
+            submitReusePass(state, {
+                copyBuffer: {
+                    buffer: outputBuffer,
+                    bytesPerRow: paddedBytesPerRow,
+                },
+            });
+        } else {
+            submitRender(state, {
+                presentToCanvas: false,
+                copyBuffer: {
+                    buffer: outputBuffer,
+                    bytesPerRow: paddedBytesPerRow,
+                },
+            });
+        }
 
         await device.queue.onSubmittedWorkDone();
         await outputBuffer.mapAsync(GPUMapMode.READ);
@@ -402,21 +514,20 @@ export async function createWebgpuRenderer({ canvas }) {
             usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
         });
 
-        const encoder = device.createCommandEncoder();
-        writeUniforms(state);
-        encoder.clearBuffer(classificationStatsBuffer);
-        encodeClassificationPass(encoder, state);
-        encodeUnknownRefinementPass(encoder, state);
-        encoder.clearBuffer(classificationStatsBuffer);
-        encodeFinalizePass(encoder, state);
-        encoder.copyBufferToBuffer(
-            classificationStatsBuffer,
-            0,
-            outputBuffer,
-            0,
-            CLASSIFICATION_STATS_BUFFER_SIZE,
-        );
-        device.queue.submit([encoder.finish()]);
+        if (hasComputedState(state)) {
+            submitReusePass(state, {
+                copyStats: {
+                    buffer: outputBuffer,
+                },
+            });
+        } else {
+            submitRender(state, {
+                presentToCanvas: false,
+                copyStats: {
+                    buffer: outputBuffer,
+                },
+            });
+        }
 
         await device.queue.onSubmittedWorkDone();
         await outputBuffer.mapAsync(GPUMapMode.READ);
@@ -436,74 +547,171 @@ export async function createWebgpuRenderer({ canvas }) {
         };
     }
 
-    async function readUnknownPixelIndices(state, limit = 256) {
+    async function readUnknownPixelIndexBuffer(state, limit = 256) {
+        const payload = await readUnknownPixelIndexBufferSinglePass(state, {
+            presentToCanvas: false,
+        });
+        const clampedLimit = Math.max(0, Math.min(limit, payload.unknownCount));
+        const indices = payload.indices.slice(0, clampedLimit);
+
+        return {
+            unknownCount: payload.unknownCount,
+            returnedCount: indices.length,
+            truncated: clampedLimit < payload.unknownCount,
+            indices,
+        };
+    }
+
+    async function readUnknownPixelIndexBufferSinglePass(state, { presentToCanvas = false } = {}) {
         ensureConfigured(state.width, state.height);
 
         const statsReadBuffer = device.createBuffer({
             size: CLASSIFICATION_STATS_BUFFER_SIZE,
             usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
         });
+        const unknownReadBuffer = device.createBuffer({
+            size: state.width * state.height * UNKNOWN_INDEX_STRIDE,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
 
-        const encoder = device.createCommandEncoder();
+        const cpuStart = performance.now();
+        if (hasComputedState(state)) {
+            submitReusePass(state, {
+                presentToCanvas,
+                copyStats: {
+                    buffer: statsReadBuffer,
+                },
+                copyUnknownIndices: {
+                    buffer: unknownReadBuffer,
+                    size: state.width * state.height * UNKNOWN_INDEX_STRIDE,
+                },
+            });
+        } else {
+            submitRender(state, {
+                presentToCanvas,
+                copyStats: {
+                    buffer: statsReadBuffer,
+                },
+                copyUnknownIndices: {
+                    buffer: unknownReadBuffer,
+                    size: state.width * state.height * UNKNOWN_INDEX_STRIDE,
+                },
+            });
+        }
+        lastCpuRenderMs = performance.now() - cpuStart;
+
+        await device.queue.onSubmittedWorkDone();
+        await Promise.all([
+            statsReadBuffer.mapAsync(GPUMapMode.READ),
+            unknownReadBuffer.mapAsync(GPUMapMode.READ),
+        ]);
+
+        const statsValues = new Uint32Array(statsReadBuffer.getMappedRange().slice(0));
+        const unknownCount = statsValues[2];
+        const rawIndices = new Uint32Array(unknownReadBuffer.getMappedRange().slice(0));
+        const indices = rawIndices.slice(0, unknownCount);
+
+        statsReadBuffer.unmap();
+        statsReadBuffer.destroy();
+        unknownReadBuffer.unmap();
+        unknownReadBuffer.destroy();
+
+        return {
+            unknownCount,
+            returnedCount: indices.length,
+            truncated: false,
+            indices,
+        };
+    }
+
+    async function measureHybridUnknownPass(state, { presentToCanvas = false } = {}) {
+        ensureConfigured(state.width, state.height);
         writeUniforms(state);
-        encoder.clearBuffer(classificationStatsBuffer);
-        encodeClassificationPass(encoder, state);
-        encodeUnknownRefinementPass(encoder, state);
-        encoder.clearBuffer(classificationStatsBuffer);
-        encodeFinalizePass(encoder, state);
-        encoder.copyBufferToBuffer(
+
+        const classifyEncoder = device.createCommandEncoder();
+        classifyEncoder.clearBuffer(classificationStatsBuffer);
+        encodeClassificationPass(classifyEncoder, state);
+        const classifyTiming = await submitAndWait(classifyEncoder);
+
+        const refineEncoder = device.createCommandEncoder();
+        encodeUnknownRefinementPass(refineEncoder, state);
+        const refineTiming = await submitAndWait(refineEncoder);
+
+        const statsReadBuffer = device.createBuffer({
+            size: CLASSIFICATION_STATS_BUFFER_SIZE,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
+        const unknownReadBuffer = device.createBuffer({
+            size: state.width * state.height * UNKNOWN_INDEX_STRIDE,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
+
+        const finalizeEncoder = device.createCommandEncoder();
+        finalizeEncoder.clearBuffer(classificationStatsBuffer);
+        encodeFinalizePass(finalizeEncoder, state);
+        if (presentToCanvas) {
+            encodeBlitPass(finalizeEncoder, context.getCurrentTexture().createView());
+        }
+        finalizeEncoder.copyBufferToBuffer(
             classificationStatsBuffer,
             0,
             statsReadBuffer,
             0,
             CLASSIFICATION_STATS_BUFFER_SIZE,
         );
-        device.queue.submit([encoder.finish()]);
+        finalizeEncoder.copyBufferToBuffer(
+            unknownIndexBuffer,
+            0,
+            unknownReadBuffer,
+            0,
+            state.width * state.height * UNKNOWN_INDEX_STRIDE,
+        );
+        const finalizeTiming = await submitAndWait(finalizeEncoder);
 
-        await device.queue.onSubmittedWorkDone();
+        const statsMapStart = performance.now();
         await statsReadBuffer.mapAsync(GPUMapMode.READ);
-
+        const statsMapMs = performance.now() - statsMapStart;
         const statsValues = new Uint32Array(statsReadBuffer.getMappedRange().slice(0));
         const unknownCount = statsValues[2];
-        const clampedLimit = Math.max(0, Math.min(limit, unknownCount));
+
+        const unknownMapStart = performance.now();
+        await unknownReadBuffer.mapAsync(GPUMapMode.READ);
+        const unknownMapMs = performance.now() - unknownMapStart;
+        const rawIndices = new Uint32Array(unknownReadBuffer.getMappedRange().slice(0));
+        const indices = rawIndices.slice(0, unknownCount);
+
         statsReadBuffer.unmap();
         statsReadBuffer.destroy();
-
-        let indices = [];
-        if (clampedLimit > 0) {
-            const unknownReadBuffer = device.createBuffer({
-                size: clampedLimit * UNKNOWN_INDEX_STRIDE,
-                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-            });
-            const unknownEncoder = device.createCommandEncoder();
-            unknownEncoder.copyBufferToBuffer(
-                unknownIndexBuffer,
-                0,
-                unknownReadBuffer,
-                0,
-                clampedLimit * UNKNOWN_INDEX_STRIDE,
-            );
-            device.queue.submit([unknownEncoder.finish()]);
-
-            await device.queue.onSubmittedWorkDone();
-            await unknownReadBuffer.mapAsync(GPUMapMode.READ);
-
-            const rawIndices = new Uint32Array(unknownReadBuffer.getMappedRange().slice(0));
-            indices = Array.from(rawIndices).map((index) => ({
-                index,
-                x: index % state.width,
-                y: Math.floor(index / state.width),
-            }));
-
-            unknownReadBuffer.unmap();
-            unknownReadBuffer.destroy();
-        }
+        unknownReadBuffer.unmap();
+        unknownReadBuffer.destroy();
 
         return {
             unknownCount,
             returnedCount: indices.length,
-            truncated: clampedLimit < unknownCount,
+            truncated: false,
             indices,
+            timing: {
+                classifySubmitMs: classifyTiming.submitMs,
+                classifyWaitMs: classifyTiming.waitMs,
+                refineSubmitMs: refineTiming.submitMs,
+                refineWaitMs: refineTiming.waitMs,
+                finalizeSubmitMs: finalizeTiming.submitMs,
+                finalizeWaitMs: finalizeTiming.waitMs,
+                statsMapMs,
+                unknownMapMs,
+            },
+        };
+    }
+
+    async function readUnknownPixelIndices(state, limit = 256) {
+        const payload = await readUnknownPixelIndexBuffer(state, limit);
+        return {
+            ...payload,
+            indices: Array.from(payload.indices, (index) => ({
+                index,
+                x: index % state.width,
+                y: Math.floor(index / state.width),
+            })),
         };
     }
 
@@ -520,6 +728,9 @@ export async function createWebgpuRenderer({ canvas }) {
         readPixels,
         readPixelState,
         readClassificationStats,
+        readUnknownPixelIndexBuffer,
+        readUnknownPixelIndexBufferSinglePass,
+        measureHybridUnknownPass,
         readUnknownPixelIndices,
         getTiming() {
             return { lastCpuRenderMs, lastGpuRenderMs: null };

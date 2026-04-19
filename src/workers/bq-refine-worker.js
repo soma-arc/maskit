@@ -1,17 +1,23 @@
 import { evaluateBqPixel, refineUnknownMask } from '../bq-cpu.mjs';
 
 self.addEventListener('message', (event) => {
-    const { requestId, renderState, candidateMaskBuffer, unknownPixels, options, action } =
+    const { requestId, renderState, candidateMaskBuffer, unknownIndicesBuffer, options, action } =
         event.data;
 
     try {
+        const unknownIndices = unknownIndicesBuffer ? new Uint32Array(unknownIndicesBuffer) : null;
+
         if (action === 'resolveUnknownPixels') {
-            const resolvedValues = new Uint8Array(unknownPixels.length);
+            if (!unknownIndices) {
+                throw new Error('resolveUnknownPixels requires unknownIndicesBuffer');
+            }
+
+            const resolvedValues = new Uint8Array(unknownIndices.length);
             let resolvedTrue = 0;
             let resolvedFalse = 0;
 
-            for (let index = 0; index < unknownPixels.length; index += 1) {
-                const nextValue = evaluateBqPixel(renderState, unknownPixels[index].index, options)
+            for (let index = 0; index < unknownIndices.length; index += 1) {
+                const nextValue = evaluateBqPixel(renderState, unknownIndices[index], options)
                     ? 1
                     : 0;
                 resolvedValues[index] = nextValue;
@@ -36,7 +42,10 @@ self.addEventListener('message', (event) => {
         }
 
         const candidateMask = new Uint8Array(candidateMaskBuffer);
-        const refined = refineUnknownMask(renderState, candidateMask, unknownPixels, options);
+        if (!unknownIndices) {
+            throw new Error('refineUnknownMask requires unknownIndicesBuffer');
+        }
+        const refined = refineUnknownMask(renderState, candidateMask, unknownIndices, options);
 
         self.postMessage(
             {
