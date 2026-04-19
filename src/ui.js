@@ -6,7 +6,9 @@ export function getViewerElements(doc = document) {
         hybridCanvas: doc.getElementById('hybrid-c'),
         modeSelect: doc.getElementById('mode'),
         yRealInput: doc.getElementById('y-real'),
+        yRealSliderInput: doc.getElementById('y-real-slider'),
         yImagInput: doc.getElementById('y-imag'),
+        yImagSliderInput: doc.getElementById('y-imag-slider'),
         renderWidthInput: doc.getElementById('render-width'),
         renderHeightInput: doc.getElementById('render-height'),
         sinkItersInput: doc.getElementById('sink-iters'),
@@ -23,7 +25,9 @@ export function getViewerElements(doc = document) {
 export function syncInputsWithState(elements, state) {
     elements.modeSelect.value = String(state.mode);
     elements.yRealInput.value = String(state.yReal);
+    elements.yRealSliderInput.value = String(state.yReal);
     elements.yImagInput.value = String(state.yImag);
+    elements.yImagSliderInput.value = String(state.yImag);
     elements.renderWidthInput.value = String(state.width || DEFAULT_RENDER_WIDTH);
     elements.renderHeightInput.value = String(state.height || DEFAULT_RENDER_HEIGHT);
     elements.sinkItersInput.value = String(state.maxSinkIters);

@@ -40,13 +40,20 @@ const hybridWorkerRequests = new Map();
 
 const hybridFrame = {
     signature: null,
-    ppm: null,
+    exportPpm: null,
     refinement: null,
 };
 
 hybridWorker.addEventListener('message', (event) => {
-    const { requestId, refinedMaskBuffer, resolvedCount, resolvedTrue, resolvedFalse, error } =
-        event.data;
+    const {
+        requestId,
+        refinedMaskBuffer,
+        resolvedValuesBuffer,
+        resolvedCount,
+        resolvedTrue,
+        resolvedFalse,
+        error,
+    } = event.data;
     const pending = hybridWorkerRequests.get(requestId);
     if (!pending) {
         return;
@@ -60,7 +67,8 @@ hybridWorker.addEventListener('message', (event) => {
     }
 
     pending.resolve({
-        refinedMask: new Uint8Array(refinedMaskBuffer),
+        refinedMask: refinedMaskBuffer ? new Uint8Array(refinedMaskBuffer) : null,
+        resolvedValues: resolvedValuesBuffer ? new Uint8Array(resolvedValuesBuffer) : null,
         resolvedCount,
         resolvedTrue,
         resolvedFalse,
@@ -144,7 +152,7 @@ function syncHybridCanvasVisibility() {
     const shouldShow =
         isHybridRefineEnabled(state) &&
         hybridFrame.signature === getHybridSignature(state) &&
-        hybridFrame.ppm != null;
+        hybridFrame.refinement != null;
 
     hybridCanvas.style.display = shouldShow ? 'block' : 'none';
     if (!shouldShow) {
@@ -167,20 +175,6 @@ function buildBinaryMaskFromRgba(width, height, pixels) {
     return mask;
 }
 
-function buildUnknownOverlayFromRefinedMask(width, height, refinedMask, unknownPixels) {
-    const pixels = new Uint8Array(width * height * 4);
-    for (const pixel of unknownPixels) {
-        const maskIndex = (height - 1 - pixel.y) * width + pixel.x;
-        const channel = refinedMask[maskIndex] === 1 ? 0 : 255;
-        const rgbaIndex = (pixel.y * width + pixel.x) * 4;
-        pixels[rgbaIndex] = channel;
-        pixels[rgbaIndex + 1] = channel;
-        pixels[rgbaIndex + 2] = channel;
-        pixels[rgbaIndex + 3] = 255;
-    }
-    return pixels;
-}
-
 function buildPpmFromBinaryMask(width, height, mask) {
     const lines = ['P3', `${width} ${height}`, '255'];
     for (let y = 0; y < height; y += 1) {
@@ -194,24 +188,37 @@ function buildPpmFromBinaryMask(width, height, mask) {
     return `${lines.join('\n')}\n`;
 }
 
-function refineUnknownMaskInWorker(renderState, candidateMask, unknownPixels, options) {
+function runHybridWorkerJob(payload, transferList = []) {
     const requestId = hybridWorkerRequestId;
     hybridWorkerRequestId += 1;
-    const candidateMaskBuffer = candidateMask.buffer.slice(0);
 
     return new Promise((resolve, reject) => {
         hybridWorkerRequests.set(requestId, { resolve, reject });
-        hybridWorker.postMessage(
-            {
-                requestId,
-                renderState,
-                candidateMaskBuffer,
-                unknownPixels,
-                options,
-            },
-            [candidateMaskBuffer],
-        );
+        hybridWorker.postMessage({ requestId, ...payload }, transferList);
     });
+}
+
+function resolveUnknownPixelsInWorker(renderState, unknownPixels, options) {
+    return runHybridWorkerJob({
+        action: 'resolveUnknownPixels',
+        renderState,
+        unknownPixels,
+        options,
+    });
+}
+
+function refineUnknownMaskInWorker(renderState, candidateMask, unknownPixels, options) {
+    const candidateMaskBuffer = candidateMask.buffer.slice(0);
+    return runHybridWorkerJob(
+        {
+            action: 'refineUnknownMask',
+            renderState,
+            candidateMaskBuffer,
+            unknownPixels,
+            options,
+        },
+        [candidateMaskBuffer],
+    );
 }
 
 function drawHybridFrame(width, height, pixels) {
@@ -220,7 +227,50 @@ function drawHybridFrame(width, height, pixels) {
     hybridCanvas.style.display = 'block';
 }
 
-async function buildHybridFrame(viewState) {
+function buildUnknownOverlayFromResolvedValues(width, height, resolvedValues, unknownPixels) {
+    const pixels = new Uint8Array(width * height * 4);
+    for (let index = 0; index < unknownPixels.length; index += 1) {
+        const channel = resolvedValues[index] === 1 ? 0 : 255;
+        const pixel = unknownPixels[index];
+        const rgbaIndex = (pixel.y * width + pixel.x) * 4;
+        pixels[rgbaIndex] = channel;
+        pixels[rgbaIndex + 1] = channel;
+        pixels[rgbaIndex + 2] = channel;
+        pixels[rgbaIndex + 3] = 255;
+    }
+    return pixels;
+}
+
+async function buildHybridOverlayFrame(viewState) {
+    const renderState = getRendererState(viewState);
+    const unknownPayload = await renderer.readUnknownPixelIndices(
+        renderState,
+        renderState.width * renderState.height,
+    );
+    const refined = await resolveUnknownPixelsInWorker(renderState, unknownPayload.indices, {
+        maxSinkIters: 1_000_000,
+        maxDepth: 995,
+    });
+    const hybridPixels = buildUnknownOverlayFromResolvedValues(
+        renderState.width,
+        renderState.height,
+        refined.resolvedValues,
+        unknownPayload.indices,
+    );
+
+    return {
+        signature: getHybridSignature(renderState),
+        pixels: hybridPixels,
+        refinement: {
+            unknownCount: unknownPayload.unknownCount,
+            refinedPixelCount: refined.resolvedCount,
+            resolvedTrue: refined.resolvedTrue,
+            resolvedFalse: refined.resolvedFalse,
+        },
+    };
+}
+
+async function buildHybridExportPpm(viewState) {
     const renderState = getRendererState(viewState);
     const [pixels, unknownPayload] = await Promise.all([
         renderer.readPixels(renderState),
@@ -236,25 +286,8 @@ async function buildHybridFrame(viewState) {
             maxDepth: 995,
         },
     );
-    const hybridPixels = buildUnknownOverlayFromRefinedMask(
-        renderState.width,
-        renderState.height,
-        refined.refinedMask,
-        unknownPayload.indices,
-    );
-    const ppm = buildPpmFromBinaryMask(renderState.width, renderState.height, refined.refinedMask);
 
-    return {
-        signature: getHybridSignature(renderState),
-        ppm,
-        pixels: hybridPixels,
-        refinement: {
-            unknownCount: unknownPayload.unknownCount,
-            refinedPixelCount: refined.resolvedCount,
-            resolvedTrue: refined.resolvedTrue,
-            resolvedFalse: refined.resolvedFalse,
-        },
-    };
+    return buildPpmFromBinaryMask(renderState.width, renderState.height, refined.refinedMask);
 }
 
 async function ensureHybridFrame(force = false) {
@@ -264,14 +297,14 @@ async function ensureHybridFrame(force = false) {
     }
 
     const signature = getHybridSignature(state);
-    if (!force && hybridFrame.signature === signature && hybridFrame.ppm) {
+    if (!force && hybridFrame.signature === signature && hybridFrame.refinement != null) {
         syncHybridCanvasVisibility();
         return hybridFrame;
     }
 
-    const nextFrame = await buildHybridFrame(state);
+    const nextFrame = await buildHybridOverlayFrame(state);
     hybridFrame.signature = nextFrame.signature;
-    hybridFrame.ppm = nextFrame.ppm;
+    hybridFrame.exportPpm = null;
     hybridFrame.refinement = nextFrame.refinement;
     drawHybridFrame(state.width, state.height, nextFrame.pixels);
     syncHybridCanvasVisibility();
@@ -310,7 +343,7 @@ function applyResolution() {
     applyCanvasResolution(hybridCanvas, state.width, state.height);
     renderer.setViewport(state.width, state.height);
     hybridFrame.signature = null;
-    hybridFrame.ppm = null;
+    hybridFrame.exportPpm = null;
     hybridFrame.refinement = null;
     syncHybridCanvasVisibility();
     setStatusMessage('canvas display size matches the render buffer');
@@ -391,14 +424,29 @@ elements.modeSelect.addEventListener('change', () => {
     updateStatus();
 });
 
-for (const input of [elements.yRealInput, elements.yImagInput]) {
-    input.addEventListener('input', () => {
-        state.yReal = Number(elements.yRealInput.value);
-        state.yImag = Number(elements.yImagInput.value);
-        requestHybridRefreshIfNeeded();
-        updateStatus();
-    });
+function updateYFromInputs(nextReal, nextImag) {
+    state.yReal = Number(nextReal);
+    state.yImag = Number(nextImag);
+    syncInputsWithState(elements, state);
+    requestHybridRefreshIfNeeded();
+    updateStatus();
 }
+
+elements.yRealInput.addEventListener('input', () => {
+    updateYFromInputs(elements.yRealInput.value, elements.yImagInput.value);
+});
+
+elements.yImagInput.addEventListener('input', () => {
+    updateYFromInputs(elements.yRealInput.value, elements.yImagInput.value);
+});
+
+elements.yRealSliderInput.addEventListener('input', () => {
+    updateYFromInputs(elements.yRealSliderInput.value, elements.yImagSliderInput.value);
+});
+
+elements.yImagSliderInput.addEventListener('input', () => {
+    updateYFromInputs(elements.yRealSliderInput.value, elements.yImagSliderInput.value);
+});
 
 for (const input of [elements.sinkItersInput, elements.dfsDepthInput, elements.dfsVisitsInput]) {
     input.addEventListener('input', () => {
@@ -422,8 +470,11 @@ elements.showGpuUnknownInput.addEventListener('change', () => {
 
 async function buildCurrentFramePpm() {
     if (isHybridRefineEnabled(state)) {
-        const frame = await ensureHybridFrame();
-        return frame?.ppm ?? '';
+        await ensureHybridFrame();
+        if (hybridFrame.exportPpm == null) {
+            hybridFrame.exportPpm = await buildHybridExportPpm(state);
+        }
+        return hybridFrame.exportPpm;
     }
 
     const pixels = await renderer.readPixels(getRendererState(state));
