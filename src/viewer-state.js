@@ -25,6 +25,11 @@ function parseIntParam(searchParams, name, fallback) {
     return Number.isFinite(value) ? value : fallback;
 }
 
+function parseStringParam(searchParams, name, fallback) {
+    const raw = searchParams.get(name);
+    return raw == null || raw === '' ? fallback : raw;
+}
+
 function parseBooleanParam(searchParams, name, fallback) {
     const raw = searchParams.get(name);
     if (raw == null) return fallback;
@@ -46,10 +51,13 @@ export function createInitialViewerState(elements, searchParams) {
     );
 
     const mode = parseIntParam(searchParams, 'mode', Number(elements.modeSelect.value));
-    const showGpuUnknown = parseBooleanParam(
+    const solver = elements.solverSelect
+        ? parseStringParam(searchParams, 'solver', elements.solverSelect.value)
+        : null;
+    const showCpuRefinePreview = parseBooleanParam(
         searchParams,
-        'showGpuUnknown',
-        elements.showGpuUnknownInput.checked,
+        'showCpuRefinePreview',
+        elements.showCpuRefinePreviewInput?.checked ?? true,
     );
 
     return {
@@ -61,6 +69,8 @@ export function createInitialViewerState(elements, searchParams) {
         yReal: parseFiniteParam(searchParams, 'yReal', Number(elements.yRealInput.value)),
         yImag: parseFiniteParam(searchParams, 'yImag', Number(elements.yImagInput.value)),
         mode,
+        solver,
+        showCpuRefinePreview,
         maxSinkIters: parseIntParam(
             searchParams,
             'sinkIters',
@@ -72,6 +82,5 @@ export function createInitialViewerState(elements, searchParams) {
             'dfsVisits',
             Number(elements.dfsVisitsInput.value),
         ),
-        showGpuUnknown,
     };
 }

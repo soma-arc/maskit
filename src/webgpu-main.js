@@ -14,33 +14,33 @@ import {
 } from './viewer-state.js';
 
 const GPU_COMPARE_MODE = 5;
-const HYBRID_COMPARE_MODE = 7;
-const UNKNOWN_HIGHLIGHT_MODE = 6;
-const HYBRID_SETTLE_DELAY_MS = 120;
+const SOLVER_WEBGPU_BOUNDED = 'webgpu-bounded';
+const SOLVER_WEBGPU_CPU_REFINE = 'webgpu-cpu-refine';
+const CPU_REFINE_SETTLE_DELAY_MS = 120;
 
 const elements = getViewerElements();
-const { canvas, hybridCanvas } = elements;
-const hybridContext = hybridCanvas.getContext('2d');
+const { canvas, cpuRefineCanvas } = elements;
+const cpuRefineContext = cpuRefineCanvas.getContext('2d');
 const searchParams = new URLSearchParams(window.location.search);
 const isAutomation = searchParams.get('automation') === '1';
 const state = createInitialViewerState(elements, searchParams);
-const hybridWorker = new Worker(new URL('./workers/bq-refine-worker.js', import.meta.url), {
+const cpuRefineWorker = new Worker(new URL('./workers/bq-refine-worker.js', import.meta.url), {
     type: 'module',
 });
 
 let renderer;
 let fps = 0;
 let statusMessage = '';
-let hybridRefreshPromise = null;
-let hybridRefreshPending = false;
-let hybridWorkerRequestId = 0;
+let cpuRefineRefreshPromise = null;
+let cpuRefineRefreshPending = false;
+let cpuRefineWorkerRequestId = 0;
 let renderScheduled = false;
 let lastRenderTimestamp = 0;
-let hybridSettleTimerId = null;
+let cpuRefineSettleTimerId = null;
 
-const hybridWorkerRequests = new Map();
+const cpuRefineWorkerRequests = new Map();
 
-const hybridFrame = {
+const cpuRefineFrame = {
     signature: null,
     exportPpm: null,
     refinement: null,
@@ -49,7 +49,7 @@ const hybridFrame = {
     timing: null,
 };
 
-hybridWorker.addEventListener('message', (event) => {
+cpuRefineWorker.addEventListener('message', (event) => {
     const {
         requestId,
         refinedMaskBuffer,
@@ -59,12 +59,12 @@ hybridWorker.addEventListener('message', (event) => {
         resolvedFalse,
         error,
     } = event.data;
-    const pending = hybridWorkerRequests.get(requestId);
+    const pending = cpuRefineWorkerRequests.get(requestId);
     if (!pending) {
         return;
     }
 
-    hybridWorkerRequests.delete(requestId);
+    cpuRefineWorkerRequests.delete(requestId);
 
     if (error) {
         pending.reject(new Error(error));
@@ -81,21 +81,14 @@ hybridWorker.addEventListener('message', (event) => {
 });
 
 function getRendererState(viewState) {
-    if (viewState.mode !== HYBRID_COMPARE_MODE) {
-        return viewState;
-    }
-
-    return {
-        ...viewState,
-        mode: viewState.showGpuUnknown ? UNKNOWN_HIGHLIGHT_MODE : GPU_COMPARE_MODE,
-    };
+    return viewState;
 }
 
-function isHybridRefineEnabled(viewState) {
-    return viewState.mode === HYBRID_COMPARE_MODE;
+function isCpuRefineEnabled(viewState) {
+    return viewState.solver === SOLVER_WEBGPU_CPU_REFINE && viewState.mode === GPU_COMPARE_MODE;
 }
 
-function getHybridSignature(viewState) {
+function getCpuRefineSignature(viewState) {
     return JSON.stringify({
         width: viewState.width,
         height: viewState.height,
@@ -104,10 +97,10 @@ function getHybridSignature(viewState) {
         scale: viewState.scale,
         yReal: viewState.yReal,
         yImag: viewState.yImag,
+        solver: viewState.solver,
         maxSinkIters: viewState.maxSinkIters,
         maxDfsDepth: viewState.maxDfsDepth,
         maxDfsVisits: viewState.maxDfsVisits,
-        showGpuUnknown: viewState.showGpuUnknown,
     });
 }
 
@@ -148,29 +141,30 @@ function updateStatus() {
     });
 }
 
-function hideHybridCanvas() {
-    hybridCanvas.style.display = 'none';
-    hybridContext.clearRect(0, 0, hybridCanvas.width, hybridCanvas.height);
+function hideCpuRefineCanvas() {
+    cpuRefineCanvas.style.display = 'none';
+    cpuRefineContext.clearRect(0, 0, cpuRefineCanvas.width, cpuRefineCanvas.height);
 }
 
-function invalidateHybridFrame() {
-    hybridFrame.signature = null;
-    hybridFrame.exportPpm = null;
-    hybridFrame.refinement = null;
-    hybridFrame.unknownIndices = null;
-    hybridFrame.resolvedValues = null;
-    hybridFrame.timing = null;
+function invalidateCpuRefineFrame() {
+    cpuRefineFrame.signature = null;
+    cpuRefineFrame.exportPpm = null;
+    cpuRefineFrame.refinement = null;
+    cpuRefineFrame.unknownIndices = null;
+    cpuRefineFrame.resolvedValues = null;
+    cpuRefineFrame.timing = null;
 }
 
-function syncHybridCanvasVisibility() {
+function syncCpuRefineCanvasVisibility() {
     const shouldShow =
-        isHybridRefineEnabled(state) &&
-        hybridFrame.signature === getHybridSignature(state) &&
-        hybridFrame.refinement != null;
+        isCpuRefineEnabled(state) &&
+        state.showCpuRefinePreview &&
+        cpuRefineFrame.signature === getCpuRefineSignature(state) &&
+        cpuRefineFrame.refinement != null;
 
-    hybridCanvas.style.display = shouldShow ? 'block' : 'none';
+    cpuRefineCanvas.style.display = shouldShow ? 'block' : 'none';
     if (!shouldShow) {
-        hideHybridCanvas();
+        hideCpuRefineCanvas();
     }
 }
 
@@ -220,18 +214,18 @@ function applyResolvedUnknownValuesToMask(
     return refinedMask;
 }
 
-function runHybridWorkerJob(payload, transferList = []) {
-    const requestId = hybridWorkerRequestId;
-    hybridWorkerRequestId += 1;
+function runCpuRefineWorkerJob(payload, transferList = []) {
+    const requestId = cpuRefineWorkerRequestId;
+    cpuRefineWorkerRequestId += 1;
 
     return new Promise((resolve, reject) => {
-        hybridWorkerRequests.set(requestId, { resolve, reject });
-        hybridWorker.postMessage({ requestId, ...payload }, transferList);
+        cpuRefineWorkerRequests.set(requestId, { resolve, reject });
+        cpuRefineWorker.postMessage({ requestId, ...payload }, transferList);
     });
 }
 
 function resolveUnknownPixelsInWorker(renderState, unknownIndices, options) {
-    return runHybridWorkerJob({
+    return runCpuRefineWorkerJob({
         action: 'resolveUnknownPixels',
         renderState,
         unknownIndicesBuffer: unknownIndices.buffer,
@@ -239,10 +233,10 @@ function resolveUnknownPixelsInWorker(renderState, unknownIndices, options) {
     });
 }
 
-function drawHybridFrame(width, height, pixels) {
+function drawCpuRefineFrame(width, height, pixels) {
     const imageData = new ImageData(new Uint8ClampedArray(pixels), width, height);
-    hybridContext.putImageData(imageData, 0, 0);
-    hybridCanvas.style.display = 'block';
+    cpuRefineContext.putImageData(imageData, 0, 0);
+    cpuRefineCanvas.style.display = 'block';
 }
 
 function buildUnknownOverlayFromResolvedValues(width, height, resolvedValues, unknownIndices) {
@@ -261,7 +255,7 @@ function buildUnknownOverlayFromResolvedValues(width, height, resolvedValues, un
     return pixels;
 }
 
-async function buildHybridOverlayFrame(viewState) {
+async function buildCpuRefineOverlayFrame(viewState) {
     const renderState = getRendererState(viewState);
     const unknownPayload = isAutomation
         ? await renderer.measureHybridUnknownPass(renderState, {
@@ -288,7 +282,7 @@ async function buildHybridOverlayFrame(viewState) {
     const workerRefineMs = performance.now() - workerRefineStart;
 
     const overlayComposeStart = performance.now();
-    const hybridPixels = buildUnknownOverlayFromResolvedValues(
+    const cpuRefinePixels = buildUnknownOverlayFromResolvedValues(
         renderState.width,
         renderState.height,
         refined.resolvedValues,
@@ -297,8 +291,8 @@ async function buildHybridOverlayFrame(viewState) {
     const overlayComposeMs = performance.now() - overlayComposeStart;
 
     return {
-        signature: getHybridSignature(renderState),
-        pixels: hybridPixels,
+        signature: getCpuRefineSignature(viewState),
+        pixels: cpuRefinePixels,
         refinement: {
             unknownCount: unknownPayload.unknownCount,
             refinedPixelCount: refined.resolvedCount,
@@ -325,7 +319,7 @@ async function buildHybridOverlayFrame(viewState) {
     };
 }
 
-async function buildHybridExportPpm(viewState) {
+async function buildCpuRefineExportPpm(viewState) {
     const renderState = getRendererState(viewState);
     const exportReadbackStart = performance.now();
     const pixels = await renderer.readPixels(renderState);
@@ -334,19 +328,19 @@ async function buildHybridExportPpm(viewState) {
     const exportComposeStart = performance.now();
     const candidateMask = buildBinaryMaskFromRgba(renderState.width, renderState.height, pixels);
 
-    const signature = getHybridSignature(viewState);
-    let unknownIndices = hybridFrame.unknownIndices;
-    let resolvedValues = hybridFrame.resolvedValues;
-    if (hybridFrame.signature !== signature || !unknownIndices || !resolvedValues) {
-        const overlayFrame = await buildHybridOverlayFrame(viewState);
+    const signature = getCpuRefineSignature(viewState);
+    let unknownIndices = cpuRefineFrame.unknownIndices;
+    let resolvedValues = cpuRefineFrame.resolvedValues;
+    if (cpuRefineFrame.signature !== signature || !unknownIndices || !resolvedValues) {
+        const overlayFrame = await buildCpuRefineOverlayFrame(viewState);
         unknownIndices = overlayFrame.unknownIndices;
         resolvedValues = overlayFrame.resolvedValues;
-        hybridFrame.signature = overlayFrame.signature;
-        hybridFrame.refinement = overlayFrame.refinement;
-        hybridFrame.unknownIndices = overlayFrame.unknownIndices;
-        hybridFrame.resolvedValues = overlayFrame.resolvedValues;
-        drawHybridFrame(state.width, state.height, overlayFrame.pixels);
-        syncHybridCanvasVisibility();
+        cpuRefineFrame.signature = overlayFrame.signature;
+        cpuRefineFrame.refinement = overlayFrame.refinement;
+        cpuRefineFrame.unknownIndices = overlayFrame.unknownIndices;
+        cpuRefineFrame.resolvedValues = overlayFrame.resolvedValues;
+        drawCpuRefineFrame(state.width, state.height, overlayFrame.pixels);
+        syncCpuRefineCanvasVisibility();
     }
 
     const refinedMask = applyResolvedUnknownValuesToMask(
@@ -359,10 +353,10 @@ async function buildHybridExportPpm(viewState) {
     const ppm = buildPpmFromBinaryMask(renderState.width, renderState.height, refinedMask);
     const exportComposeMs = performance.now() - exportComposeStart;
 
-    hybridFrame.timing = {
-        unknownReadbackMs: hybridFrame.timing?.unknownReadbackMs ?? 0,
-        workerRefineMs: hybridFrame.timing?.workerRefineMs ?? 0,
-        overlayComposeMs: hybridFrame.timing?.overlayComposeMs ?? 0,
+    cpuRefineFrame.timing = {
+        unknownReadbackMs: cpuRefineFrame.timing?.unknownReadbackMs ?? 0,
+        workerRefineMs: cpuRefineFrame.timing?.workerRefineMs ?? 0,
+        overlayComposeMs: cpuRefineFrame.timing?.overlayComposeMs ?? 0,
         exportReadbackMs,
         exportComposeMs,
     };
@@ -370,26 +364,26 @@ async function buildHybridExportPpm(viewState) {
     return ppm;
 }
 
-async function ensureHybridFrame(force = false) {
-    if (!isHybridRefineEnabled(state)) {
-        syncHybridCanvasVisibility();
+async function ensureCpuRefineFrame(force = false) {
+    if (!isCpuRefineEnabled(state)) {
+        syncCpuRefineCanvasVisibility();
         return null;
     }
 
-    const signature = getHybridSignature(state);
-    if (!force && hybridFrame.signature === signature && hybridFrame.refinement != null) {
-        syncHybridCanvasVisibility();
-        return hybridFrame;
+    const signature = getCpuRefineSignature(state);
+    if (!force && cpuRefineFrame.signature === signature && cpuRefineFrame.refinement != null) {
+        syncCpuRefineCanvasVisibility();
+        return cpuRefineFrame;
     }
 
-    const nextFrame = await buildHybridOverlayFrame(state);
-    hybridFrame.signature = nextFrame.signature;
-    hybridFrame.exportPpm = null;
-    hybridFrame.refinement = nextFrame.refinement;
-    hybridFrame.unknownIndices = nextFrame.unknownIndices;
-    hybridFrame.resolvedValues = nextFrame.resolvedValues;
-    hybridFrame.timing = nextFrame.timing;
-    drawHybridFrame(state.width, state.height, nextFrame.pixels);
+    const nextFrame = await buildCpuRefineOverlayFrame(state);
+    cpuRefineFrame.signature = nextFrame.signature;
+    cpuRefineFrame.exportPpm = null;
+    cpuRefineFrame.refinement = nextFrame.refinement;
+    cpuRefineFrame.unknownIndices = nextFrame.unknownIndices;
+    cpuRefineFrame.resolvedValues = nextFrame.resolvedValues;
+    cpuRefineFrame.timing = nextFrame.timing;
+    drawCpuRefineFrame(state.width, state.height, nextFrame.pixels);
     if (!isAutomation) {
         const now = performance.now();
         if (lastRenderTimestamp > 0) {
@@ -398,83 +392,83 @@ async function ensureHybridFrame(force = false) {
         }
         lastRenderTimestamp = now;
     }
-    syncHybridCanvasVisibility();
+    syncCpuRefineCanvasVisibility();
     setStatusMessage(
-        `hybrid: refined ${nextFrame.refinement.refinedPixelCount} unresolved pixels (${nextFrame.refinement.resolvedTrue} -> true, ${nextFrame.refinement.resolvedFalse} -> false)`,
+        `cpu refine: refined ${nextFrame.refinement.refinedPixelCount} unresolved pixels (${nextFrame.refinement.resolvedTrue} -> true, ${nextFrame.refinement.resolvedFalse} -> false)`,
     );
-    return hybridFrame;
+    return cpuRefineFrame;
 }
 
-async function flushHybridRefreshQueue() {
-    while (hybridRefreshPending) {
-        hybridRefreshPending = false;
+async function flushCpuRefineRefreshQueue() {
+    while (cpuRefineRefreshPending) {
+        cpuRefineRefreshPending = false;
         try {
-            await ensureHybridFrame(true);
+            await ensureCpuRefineFrame(true);
         } catch (error) {
-            hideHybridCanvas();
+            hideCpuRefineCanvas();
             const message = error instanceof Error ? error.message : String(error);
-            setStatusMessage(`hybrid error: ${message}`);
+            setStatusMessage(`cpu refine error: ${message}`);
         }
     }
-    hybridRefreshPromise = null;
+    cpuRefineRefreshPromise = null;
 }
 
-function requestHybridRefresh() {
-    hybridRefreshPending = true;
-    syncHybridCanvasVisibility();
-    if (!hybridRefreshPromise) {
-        setStatusMessage('hybrid: refining unresolved pixels in browser');
-        hybridRefreshPromise = flushHybridRefreshQueue();
+function requestCpuRefineRefresh() {
+    cpuRefineRefreshPending = true;
+    syncCpuRefineCanvasVisibility();
+    if (!cpuRefineRefreshPromise) {
+        setStatusMessage('cpu refine: refining unresolved pixels in browser');
+        cpuRefineRefreshPromise = flushCpuRefineRefreshQueue();
     }
 }
 
-function clearHybridSettleTimer() {
-    if (hybridSettleTimerId != null) {
-        window.clearTimeout(hybridSettleTimerId);
-        hybridSettleTimerId = null;
+function clearCpuRefineSettleTimer() {
+    if (cpuRefineSettleTimerId != null) {
+        window.clearTimeout(cpuRefineSettleTimerId);
+        cpuRefineSettleTimerId = null;
     }
 }
 
-function scheduleHybridRefreshAfterDelay() {
-    clearHybridSettleTimer();
-    hybridSettleTimerId = window.setTimeout(() => {
-        hybridSettleTimerId = null;
-        if (isHybridRefineEnabled(state)) {
-            requestHybridRefresh();
+function scheduleCpuRefineRefreshAfterDelay() {
+    clearCpuRefineSettleTimer();
+    cpuRefineSettleTimerId = window.setTimeout(() => {
+        cpuRefineSettleTimerId = null;
+        if (isCpuRefineEnabled(state)) {
+            requestCpuRefineRefresh();
         }
-    }, HYBRID_SETTLE_DELAY_MS);
+    }, CPU_REFINE_SETTLE_DELAY_MS);
 }
 
 function applyResolution() {
     syncInputsWithState(elements, state);
     applyCanvasResolution(canvas, state.width, state.height);
-    applyCanvasResolution(hybridCanvas, state.width, state.height);
+    applyCanvasResolution(cpuRefineCanvas, state.width, state.height);
     renderer.setViewport(state.width, state.height);
-    hybridFrame.signature = null;
-    hybridFrame.exportPpm = null;
-    hybridFrame.refinement = null;
-    hybridFrame.unknownIndices = null;
-    hybridFrame.resolvedValues = null;
-    hybridFrame.timing = null;
-    syncHybridCanvasVisibility();
+    cpuRefineFrame.signature = null;
+    cpuRefineFrame.exportPpm = null;
+    cpuRefineFrame.refinement = null;
+    cpuRefineFrame.unknownIndices = null;
+    cpuRefineFrame.resolvedValues = null;
+    cpuRefineFrame.timing = null;
+    syncCpuRefineCanvasVisibility();
     setStatusMessage('canvas display size matches the render buffer');
 }
 
-function requestHybridRefreshIfNeeded({ deferHybrid = false } = {}) {
-    if (isHybridRefineEnabled(state)) {
-        invalidateHybridFrame();
-        hideHybridCanvas();
+function requestCpuRefineRefreshIfNeeded({ deferCpuRefine = false } = {}) {
+    if (isCpuRefineEnabled(state)) {
+        invalidateCpuRefineFrame();
+        hideCpuRefineCanvas();
         scheduleRender();
-        if (deferHybrid) {
-            scheduleHybridRefreshAfterDelay();
+        if (deferCpuRefine) {
+            scheduleCpuRefineRefreshAfterDelay();
         } else {
-            clearHybridSettleTimer();
-            requestHybridRefresh();
+            clearCpuRefineSettleTimer();
+            requestCpuRefineRefresh();
         }
     } else {
-        clearHybridSettleTimer();
+        clearCpuRefineSettleTimer();
         scheduleRender();
-        syncHybridCanvasVisibility();
+        syncCpuRefineCanvasVisibility();
     }
 }
 
@@ -499,9 +493,9 @@ canvas.addEventListener('mousedown', (event) => {
 window.addEventListener('mouseup', () => {
     const wasDragging = dragging;
     dragging = false;
-    if (wasDragging && isHybridRefineEnabled(state)) {
-        clearHybridSettleTimer();
-        requestHybridRefresh();
+    if (wasDragging && isCpuRefineEnabled(state)) {
+        clearCpuRefineSettleTimer();
+        requestCpuRefineRefresh();
     }
 });
 
@@ -512,7 +506,7 @@ window.addEventListener('mousemove', (event) => {
     state.offsetY -= dy / state.scale;
     lastX = event.clientX;
     lastY = event.clientY;
-    requestHybridRefreshIfNeeded({ deferHybrid: true });
+    requestCpuRefineRefreshIfNeeded({ deferCpuRefine: true });
     updateStatus();
 });
 
@@ -522,7 +516,7 @@ canvas.addEventListener(
         event.preventDefault();
         const factor = event.deltaY < 0 ? 1.1 : 1 / 1.1;
         state.scale *= factor;
-        requestHybridRefreshIfNeeded({ deferHybrid: true });
+        requestCpuRefineRefreshIfNeeded({ deferCpuRefine: true });
         updateStatus();
     },
     { passive: false },
@@ -531,29 +525,47 @@ canvas.addEventListener(
 elements.applyResolutionButton.addEventListener('click', () => {
     sanitizeResolutionFromInputs(elements, state);
     applyResolution();
-    requestHybridRefreshIfNeeded();
+    requestCpuRefineRefreshIfNeeded();
 });
 
 elements.resetViewButton.addEventListener('click', () => {
     state.offsetX = DEFAULT_VIEW.offsetX;
     state.offsetY = DEFAULT_VIEW.offsetY;
     state.scale = defaultScaleForResolution(state.width, state.height);
-    requestHybridRefreshIfNeeded();
+    requestCpuRefineRefreshIfNeeded();
     setStatusMessage('view reset to match the BQ.py default window');
 });
 
 elements.modeSelect.addEventListener('change', () => {
     state.mode = Number(elements.modeSelect.value);
     syncInputsWithState(elements, state);
-    requestHybridRefreshIfNeeded();
+    requestCpuRefineRefreshIfNeeded();
     updateStatus();
 });
+
+if (elements.solverSelect) {
+    elements.solverSelect.addEventListener('change', () => {
+        state.solver = elements.solverSelect.value;
+        syncInputsWithState(elements, state);
+        requestCpuRefineRefreshIfNeeded();
+        updateStatus();
+    });
+}
+
+if (elements.showCpuRefinePreviewInput) {
+    elements.showCpuRefinePreviewInput.addEventListener('change', () => {
+        state.showCpuRefinePreview = elements.showCpuRefinePreviewInput.checked;
+        syncInputsWithState(elements, state);
+        syncCpuRefineCanvasVisibility();
+        updateStatus();
+    });
+}
 
 function updateYFromInputs(nextReal, nextImag) {
     state.yReal = Number(nextReal);
     state.yImag = Number(nextImag);
     syncInputsWithState(elements, state);
-    requestHybridRefreshIfNeeded();
+    requestCpuRefineRefreshIfNeeded();
     updateStatus();
 }
 
@@ -582,24 +594,18 @@ for (const input of [elements.sinkItersInput, elements.dfsDepthInput, elements.d
             Number.parseInt(elements.dfsVisitsInput.value, 10) || 8192,
         );
         syncInputsWithState(elements, state);
-        requestHybridRefreshIfNeeded();
+        requestCpuRefineRefreshIfNeeded();
         updateStatus();
     });
 }
 
-elements.showGpuUnknownInput.addEventListener('change', () => {
-    state.showGpuUnknown = elements.showGpuUnknownInput.checked;
-    requestHybridRefreshIfNeeded();
-    updateStatus();
-});
-
 async function buildCurrentFramePpm() {
-    if (isHybridRefineEnabled(state)) {
-        await ensureHybridFrame();
-        if (hybridFrame.exportPpm == null) {
-            hybridFrame.exportPpm = await buildHybridExportPpm(state);
+    if (isCpuRefineEnabled(state)) {
+        await ensureCpuRefineFrame();
+        if (cpuRefineFrame.exportPpm == null) {
+            cpuRefineFrame.exportPpm = await buildCpuRefineExportPpm(state);
         }
-        return hybridFrame.exportPpm;
+        return cpuRefineFrame.exportPpm;
     }
 
     const pixels = await renderer.readPixels(getRendererState(state));
@@ -617,8 +623,8 @@ function getState() {
     return {
         ...state,
         ...renderer.getTiming(),
-        hybrid: hybridFrame.refinement,
-        hybridTiming: hybridFrame.timing,
+        cpuRefine: cpuRefineFrame.refinement,
+        cpuRefineTiming: cpuRefineFrame.timing,
     };
 }
 
@@ -626,6 +632,10 @@ function setParams(params = {}) {
     if (typeof params.yReal === 'number') state.yReal = params.yReal;
     if (typeof params.yImag === 'number') state.yImag = params.yImag;
     if (typeof params.mode === 'number') state.mode = params.mode;
+    if (typeof params.solver === 'string') state.solver = params.solver;
+    if (typeof params.showCpuRefinePreview === 'boolean') {
+        state.showCpuRefinePreview = params.showCpuRefinePreview;
+    }
     if (typeof params.offsetX === 'number') state.offsetX = params.offsetX;
     if (typeof params.offsetY === 'number') state.offsetY = params.offsetY;
     if (typeof params.scale === 'number') state.scale = params.scale;
@@ -634,13 +644,9 @@ function setParams(params = {}) {
     if (typeof params.maxDfsVisits === 'number') state.maxDfsVisits = params.maxDfsVisits;
     if (typeof params.width === 'number') state.width = Math.max(1, Math.round(params.width));
     if (typeof params.height === 'number') state.height = Math.max(1, Math.round(params.height));
-    if (typeof params.showGpuUnknown === 'boolean') {
-        state.showGpuUnknown = params.showGpuUnknown;
-    }
-
     syncInputsWithState(elements, state);
     applyResolution();
-    requestHybridRefreshIfNeeded();
+    requestCpuRefineRefreshIfNeeded();
 }
 
 function installAutomationApi() {
@@ -648,8 +654,8 @@ function installAutomationApi() {
         setParams,
         renderOnce: async () => {
             const wallStart = performance.now();
-            if (isHybridRefineEnabled(state)) {
-                await ensureHybridFrame(true);
+            if (isCpuRefineEnabled(state)) {
+                await ensureCpuRefineFrame(true);
             } else {
                 await renderer.renderOnce(getRendererState(state));
             }
@@ -678,7 +684,7 @@ function installAutomationApi() {
             state.offsetY = DEFAULT_VIEW.offsetY;
             state.scale = defaultScaleForResolution(state.width, state.height);
             syncInputsWithState(elements, state);
-            requestHybridRefreshIfNeeded();
+            requestCpuRefineRefreshIfNeeded();
             setStatusMessage('view reset to match the BQ.py default window');
         },
     };
@@ -695,7 +701,7 @@ async function main() {
     syncInputsWithState(elements, state);
     applyResolution();
     installAutomationApi();
-    requestHybridRefreshIfNeeded();
+    requestCpuRefineRefreshIfNeeded();
     setStatusMessage('WebGPU preview ready');
 }
 

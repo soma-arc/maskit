@@ -3,8 +3,9 @@ import { DEFAULT_RENDER_HEIGHT, DEFAULT_RENDER_WIDTH } from './viewer-state.js';
 export function getViewerElements(doc = document) {
     return {
         canvas: doc.getElementById('c'),
-        hybridCanvas: doc.getElementById('hybrid-c'),
+        cpuRefineCanvas: doc.getElementById('cpu-refine-c'),
         modeSelect: doc.getElementById('mode'),
+        solverSelect: doc.getElementById('solver'),
         yRealInput: doc.getElementById('y-real'),
         yRealSliderInput: doc.getElementById('y-real-slider'),
         yImagInput: doc.getElementById('y-imag'),
@@ -14,7 +15,7 @@ export function getViewerElements(doc = document) {
         sinkItersInput: doc.getElementById('sink-iters'),
         dfsDepthInput: doc.getElementById('dfs-depth'),
         dfsVisitsInput: doc.getElementById('dfs-visits'),
-        showGpuUnknownInput: doc.getElementById('show-gpu-unknown'),
+        showCpuRefinePreviewInput: doc.getElementById('show-cpu-refine-preview'),
         applyResolutionButton: doc.getElementById('apply-resolution'),
         resetViewButton: doc.getElementById('reset-view'),
         exportPpmButton: doc.getElementById('export-ppm'),
@@ -24,6 +25,9 @@ export function getViewerElements(doc = document) {
 
 export function syncInputsWithState(elements, state) {
     elements.modeSelect.value = String(state.mode);
+    if (elements.solverSelect) {
+        elements.solverSelect.value = String(state.solver);
+    }
     elements.yRealInput.value = String(state.yReal);
     elements.yRealSliderInput.value = String(state.yReal);
     elements.yImagInput.value = String(state.yImag);
@@ -33,7 +37,9 @@ export function syncInputsWithState(elements, state) {
     elements.sinkItersInput.value = String(state.maxSinkIters);
     elements.dfsDepthInput.value = String(state.maxDfsDepth);
     elements.dfsVisitsInput.value = String(state.maxDfsVisits);
-    elements.showGpuUnknownInput.checked = Boolean(state.showGpuUnknown);
+    if (elements.showCpuRefinePreviewInput) {
+        elements.showCpuRefinePreviewInput.checked = Boolean(state.showCpuRefinePreview);
+    }
 }
 
 export function sanitizeResolutionFromInputs(elements, state) {
@@ -55,30 +61,64 @@ export function applyCanvasResolution(canvas, width, height) {
 }
 
 export function buildStatusText({ state, timing, fps, message = '' }) {
-    const hybridTimingLines = state.hybridTiming
+    const cpuRefineTimingLines = state.cpuRefineTiming
         ? [
-              `hybrid overlay ms: unknown ${state.hybridTiming.unknownReadbackMs.toFixed(2)}, worker ${state.hybridTiming.workerRefineMs.toFixed(2)}, compose ${state.hybridTiming.overlayComposeMs.toFixed(2)}`,
-              `hybrid export ms: readback ${state.hybridTiming.exportReadbackMs.toFixed(2)}, compose ${state.hybridTiming.exportComposeMs.toFixed(2)}`,
-              state.hybridTiming.classifyWaitMs != null
-                  ? `hybrid gpu ms: classify ${state.hybridTiming.classifySubmitMs.toFixed(2)} + ${state.hybridTiming.classifyWaitMs.toFixed(2)}, refine ${state.hybridTiming.refineSubmitMs.toFixed(2)} + ${state.hybridTiming.refineWaitMs.toFixed(2)}, finalize ${state.hybridTiming.finalizeSubmitMs.toFixed(2)} + ${state.hybridTiming.finalizeWaitMs.toFixed(2)}`
+              `cpu refine overlay ms: unknown ${state.cpuRefineTiming.unknownReadbackMs.toFixed(2)}, worker ${state.cpuRefineTiming.workerRefineMs.toFixed(2)}, compose ${state.cpuRefineTiming.overlayComposeMs.toFixed(2)}`,
+              `cpu refine export ms: readback ${state.cpuRefineTiming.exportReadbackMs.toFixed(2)}, compose ${state.cpuRefineTiming.exportComposeMs.toFixed(2)}`,
+              state.cpuRefineTiming.classifyWaitMs != null
+                  ? `cpu refine gpu ms: classify ${state.cpuRefineTiming.classifySubmitMs.toFixed(2)} + ${state.cpuRefineTiming.classifyWaitMs.toFixed(2)}, refine ${state.cpuRefineTiming.refineSubmitMs.toFixed(2)} + ${state.cpuRefineTiming.refineWaitMs.toFixed(2)}, finalize ${state.cpuRefineTiming.finalizeSubmitMs.toFixed(2)} + ${state.cpuRefineTiming.finalizeWaitMs.toFixed(2)}`
                   : '',
-              state.hybridTiming.statsMapMs != null
-                  ? `hybrid map ms: stats ${state.hybridTiming.statsMapMs.toFixed(2)}, unknown ${state.hybridTiming.unknownMapMs.toFixed(2)}`
+              state.cpuRefineTiming.statsMapMs != null
+                  ? `cpu refine map ms: stats ${state.cpuRefineTiming.statsMapMs.toFixed(2)}, unknown ${state.cpuRefineTiming.unknownMapMs.toFixed(2)}`
                   : '',
           ]
         : [];
 
     return [
         `resolution: ${state.width} x ${state.height}`,
+        `display: ${elementsLabelForMode(state.mode)}`,
+        state.solver ? `calculation: ${elementsLabelForSolver(state.solver)}` : '',
         `offset: (${state.offsetX.toFixed(3)}, ${state.offsetY.toFixed(3)})`,
         `scale: ${state.scale.toFixed(3)} px/unit`,
         `y: ${state.yReal.toFixed(3)} + ${state.yImag.toFixed(3)}i`,
         `sink/dfs: ${state.maxSinkIters} / ${state.maxDfsDepth} / ${state.maxDfsVisits}`,
-        `show gpu unknown: ${state.showGpuUnknown ? 'on' : 'off'}`,
+        state.solver === 'webgpu-cpu-refine'
+            ? `cpu refine preview: ${state.showCpuRefinePreview ? 'on' : 'off'}`
+            : '',
         `cpu: ${timing.lastCpuRenderMs.toFixed(2)} ms, gpu: ${timing.lastGpuRenderMs == null ? 'n/a' : `${timing.lastGpuRenderMs.toFixed(2)} ms`}, fps: ${fps.toFixed(1)}`,
-        ...hybridTimingLines,
+        ...cpuRefineTimingLines,
         message,
     ]
         .filter(Boolean)
         .join('\n');
+}
+
+function elementsLabelForMode(mode) {
+    switch (mode) {
+        case 0:
+            return 'Complex Plane Coordinates';
+        case 1:
+            return 'Markoff z Components';
+        case 2:
+            return 'Markoff |z|';
+        case 3:
+            return 'Quadratic Discriminant';
+        case 4:
+            return 'H(x) Branch Test';
+        case 5:
+            return 'BQ Binary Classification';
+        default:
+            return String(mode);
+    }
+}
+
+function elementsLabelForSolver(solver) {
+    switch (solver) {
+        case 'webgpu-bounded':
+            return 'WebGPU Bounded';
+        case 'webgpu-cpu-refine':
+            return 'WebGPU + CPU Refine';
+        default:
+            return String(solver);
+    }
 }
