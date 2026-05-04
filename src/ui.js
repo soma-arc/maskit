@@ -29,9 +29,13 @@ export function syncInputsWithState(elements, state) {
         elements.solverSelect.value = String(state.solver);
     }
     elements.yRealInput.value = String(state.yReal);
-    elements.yRealSliderInput.value = String(state.yReal);
+    if (elements.yRealSliderInput) {
+        elements.yRealSliderInput.value = String(state.yReal);
+    }
     elements.yImagInput.value = String(state.yImag);
-    elements.yImagSliderInput.value = String(state.yImag);
+    if (elements.yImagSliderInput) {
+        elements.yImagSliderInput.value = String(state.yImag);
+    }
     elements.renderWidthInput.value = String(state.width || DEFAULT_RENDER_WIDTH);
     elements.renderHeightInput.value = String(state.height || DEFAULT_RENDER_HEIGHT);
     elements.sinkItersInput.value = String(state.maxSinkIters);

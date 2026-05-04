@@ -37,5 +37,5 @@ export function getBrowserLaunchOptions({ webgpu = false } = {}) {
 }
 
 export function isWebgpuPage(pagePath) {
-  return pagePath === '/webgpu.html';
+  return pagePath !== '/webgl.html';
 }

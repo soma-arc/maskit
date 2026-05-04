@@ -1,7 +1,7 @@
 # maskit
 
 Maskit 領域の可視化と比較を行うための実験用リポジトリです。  
-現在は `pnpm + Vite` の静的サイトとして、`WebGL2` 版と `WebGPU` 版を並行で持っています。
+現在は `pnpm + Vite` の静的サイトとして、`WebGPU` を主 UI、`WebGL2` を検証用経路として持っています。
 
 ## 現在の実装方針
 
@@ -35,11 +35,11 @@ WebGPU 版は compute + blit ベースです。各ピクセルごとに次を行
 
 - 描画は compute pass と表示 pass に分かれる
 - 出力 texture と一部の状態バッファを持てる
-- compare の数値結果は現時点では WebGL2 より良くなっていない
-- `WebGPU + CPU Refine` という追加の計算方式を持つ
+- `WebGPU Bounded` と `WebGPU + CPU Refine` の 2 つの計算方式を持つ
 - `WebGPU + CPU Refine` は `BQ Binary Classification` 表示に対してだけ意味を持つ
+- `WebGPU + CPU Refine` は現時点で最も良い compare 結果を出している
 
-つまり現時点では、WebGL2 が比較上の基準線で、WebGPU は compute ベースの再設計先です。
+つまり現時点では、WebGL2 が検証用の基準線で、WebGPU が主 UI かつ再設計先です。
 
 ## 前提
 
@@ -57,19 +57,14 @@ pnpm install
 
 ## ローカル起動
 
-WebGL2 版:
-
 ```bash
 pnpm dev
 ```
 
-- `http://localhost:5173/`
+- `http://localhost:5173/` : WebGPU 主 UI
+- `http://localhost:5173/webgl.html` : WebGL2 検証用ルート
 
-WebGPU 版:
-
-- `http://localhost:5173/webgpu.html`
-
-WebGL2 版では `mode`, `y`, 描画サイズ, `sink/dfs` パラメータを調整できます。  
+WebGL2 版では `Mode`, `y`, 描画サイズ, `sink/dfs` パラメータを調整できます。  
 WebGPU 版ではそれに加えて、次を分けて扱います。
 
 - `Display`: 何を描くか
@@ -92,7 +87,8 @@ WebGPU の `Calculation` は現時点で次です。
 
 ## 比較コマンド
 
-基準画像は `img.ppm` です。比較結果は `out/compare/...` に出力されます。
+基準画像は `img.ppm` です。比較結果は `out/compare/...` に出力されます。  
+WebGL2 の比較系コマンドは内部的に `/webgl.html` を使います。
 
 WebGL2 基準比較:
 
@@ -163,8 +159,8 @@ WebGPU 用では既定で次の browser args を使います。
 
 ## 主なファイル
 
-- `index.html`: WebGL2 viewer のエントリ
-- `webgpu.html`: WebGPU viewer のエントリ
+- `index.html`: WebGPU viewer の主エントリ
+- `webgl.html`: WebGL2 viewer の検証用エントリ
 - `src/main.js`: WebGL2 viewer の起動処理
 - `src/webgpu-main.js`: WebGPU viewer の起動処理
 - `src/renderers/webgl.js`: WebGL2 renderer

@@ -6,7 +6,7 @@ export default defineConfig({
         rollupOptions: {
             input: {
                 main: resolve(__dirname, 'index.html'),
-                webgpu: resolve(__dirname, 'webgpu.html'),
+                webgl: resolve(__dirname, 'webgl.html'),
             },
         },
     },

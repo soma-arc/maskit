@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Maskit – BQ Viewer (WebGPU)</title>
+    <title>Maskit – BQ Viewer</title>
     <style>
       * {
         margin: 0;
@@ -30,10 +30,6 @@
         display: grid;
         place-items: center;
         padding: 24px;
-      }
-
-      .stage__stack {
-        position: relative;
       }
 
       .hud {
@@ -82,19 +78,6 @@
         color: #b8c6d8;
       }
 
-      .toggle {
-        grid-column: span 2;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      }
-
-      .toggle input {
-        width: 16px;
-        height: 16px;
-        padding: 0;
-      }
-
       input,
       select,
       button {
@@ -105,22 +88,6 @@
         color: inherit;
         font: inherit;
         padding: 9px 10px;
-      }
-
-      input[type="checkbox"] {
-        appearance: auto;
-        width: 16px;
-        height: 16px;
-        margin: 0;
-        padding: 0;
-        border: none;
-        background: transparent;
-        accent-color: #7cc5ff;
-      }
-
-      input[type="range"] {
-        padding: 0;
-        accent-color: #7cc5ff;
       }
 
       button {
@@ -151,25 +118,18 @@
         image-rendering: pixelated;
         image-rendering: crisp-edges;
       }
-
-      #cpu-refine-c {
-        position: absolute;
-        inset: 0;
-        display: none;
-        pointer-events: none;
-      }
     </style>
   </head>
   <body>
     <section class="hud">
       <div class="hud__title">
         <h1>Maskit BQ Viewer</h1>
-        <p>WebGPU preview</p>
+        <p>WebGL2 debug stage</p>
       </div>
 
       <div class="hud__grid">
         <label>
-          Display
+          Mode
           <select id="mode">
             <option value="0">Complex Plane Coordinates</option>
             <option value="1">Markoff z Components</option>
@@ -181,31 +141,13 @@
         </label>
 
         <label>
-          Calculation
-          <select id="solver">
-            <option value="webgpu-bounded">WebGPU Bounded</option>
-            <option value="webgpu-cpu-refine">WebGPU + CPU Refine</option>
-          </select>
-        </label>
-
-        <label>
           y.real
           <input id="y-real" type="number" step="0.1" value="2" />
         </label>
 
         <label>
-          y.real slider
-          <input id="y-real-slider" type="range" min="-8" max="8" step="0.01" value="2" />
-        </label>
-
-        <label>
           y.imag
           <input id="y-imag" type="number" step="0.1" value="6" />
-        </label>
-
-        <label>
-          y.imag slider
-          <input id="y-imag-slider" type="range" min="-8" max="8" step="0.01" value="6" />
         </label>
 
         <label>
@@ -220,22 +162,17 @@
 
         <label>
           Sink iters
-          <input id="sink-iters" type="number" min="1" step="1" value="64" />
+          <input id="sink-iters" type="number" min="1" step="1" value="32" />
         </label>
 
         <label>
           DFS depth
-          <input id="dfs-depth" type="number" min="1" step="1" value="320" />
+          <input id="dfs-depth" type="number" min="1" step="1" value="96" />
         </label>
 
         <label>
           DFS visits
-          <input id="dfs-visits" type="number" min="1" step="1" value="8192" />
-        </label>
-
-        <label class="toggle">
-          <input id="show-cpu-refine-preview" type="checkbox" checked />
-          <span>Show CPU Refine Preview</span>
+          <input id="dfs-visits" type="number" min="1" step="1" value="512" />
         </label>
       </div>
 
@@ -247,12 +184,9 @@
 
       <div id="status" class="hud__status"></div>
     </section>
-      <div class="stage">
-      <div class="stage__stack">
-        <canvas id="c" data-testid="render-canvas"></canvas>
-        <canvas id="cpu-refine-c"></canvas>
-      </div>
+    <div class="stage">
+      <canvas id="c" data-testid="render-canvas"></canvas>
     </div>
-    <script type="module" src="/src/webgpu-main.js"></script>
+    <script type="module" src="/src/main.js"></script>
   </body>
 </html>

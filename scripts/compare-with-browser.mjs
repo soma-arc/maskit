@@ -49,7 +49,7 @@ function appendJsonLine(filePath, payload) {
 }
 
 function shouldApplyCpuRefinement(pagePath) {
-  return pagePath === '/webgpu.html' && process.env.MASKIT_CPU_REFINE !== '0';
+  return pagePath !== '/webgl.html' && process.env.MASKIT_CPU_REFINE !== '0';
 }
 
 async function main() {
