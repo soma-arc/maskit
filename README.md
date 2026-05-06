@@ -64,6 +64,15 @@ pnpm dev
 - `http://localhost:5173/` : WebGPU 主 UI
 - `http://localhost:5173/webgl.html` : WebGL2 検証用ルート
 
+## GitHub Pages
+
+- 公開 URL: `https://soma-arc.net/maskit/`
+- WebGPU 主 UI: `https://soma-arc.net/maskit/`
+- WebGL2 検証用: `https://soma-arc.net/maskit/webgl.html`
+
+GitHub Pages への自動デプロイは `.github/workflows/deploy-pages.yml` で行います。  
+トリガー branch は `main` です。Pages 用 build は `pnpm build:pages` を使い、Vite の `base` は `'/maskit/'` に固定しています。
+
 WebGL2 版では `Mode`, `y`, 描画サイズ, `sink/dfs` パラメータを調整できます。  
 WebGPU 版ではそれに加えて、次を分けて扱います。
 

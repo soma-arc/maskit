@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:pages": "vite build --base=/maskit/",
     "preview": "vite preview",
     "generate:ref:640": ".venv/bin/python BQ.py --width 640 --height 640 --step 0.025 > img-640.ppm",
     "compare:images": "node scripts/compare-images.mjs",
