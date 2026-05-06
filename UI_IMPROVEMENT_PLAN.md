@@ -58,7 +58,11 @@ Maskit ビューアの UI を、単なるデバッグ入力群から、観察・
 - `mode` / `solver` 分離そのものは、別計画として先に処理する
 - 本書では、その分離後の UI 構成を扱う
 
-現状の UI は、主 UI である `index.html` と検証用の `webgl.html` にあり、主な入力は次。
+現状の主 UI は `index.html` 上の WebGPU ビューアであり、検証用として `webgl.html` が別にある。
+
+UI 改善の主対象は `index.html` である。
+
+現状の主 UI 入力は次。
 
 - `mode`
 - `y.real`
@@ -154,8 +158,8 @@ canvas 側の直接操作。
 必要時のみ見せる項目。
 
 - CPU refine preview の有無
-- classification 統計
-- refine の状態表示
+- CPU refine の状態表示
+- 必要なら今後追加する診断表示
 
 ここは表示モードとは別扱いにする。
 
@@ -188,7 +192,6 @@ canvas 側の直接操作。
 
 意味:
 
-- `WebGL Bounded`: WebGL の fragment shader ベース bounded 実装
 - `WebGPU Bounded`: WebGPU の compute + blit ベース bounded 実装
 - `WebGPU + CPU Refine`: unresolved を CPU 側で再評価する経路
 
@@ -197,7 +200,12 @@ canvas 側の直接操作。
 - これは mode ではない
 - compare 系表示でも、計算方式は独立に切り替えられるべき
 
-現時点で UI に正式に出す候補は次の 3 つに限定する。
+既定値:
+
+- `Display`: `BQ Binary Classification`
+- `Calculation`: `WebGPU + CPU Refine`
+
+現時点で UI に正式に出す候補は次の 2 つに限定する。
 
 - `WebGPU Bounded`
 - `WebGPU + CPU Refine`
@@ -219,7 +227,6 @@ canvas 側の直接操作。
 操作:
 
 - ドラッグで `y` 更新
-- ダブルクリックで既定値へ戻す
 - 必要なら modifier key で微調整
 
 補助表示:
@@ -265,9 +272,8 @@ canvas 側の直接操作。
 
 ### WebGPU 固有の補助状態
 
-- unresolved 可視化フラグ
-- hybrid overlay 状態
-- classification stats
+- `Show CPU Refine Preview`
+- CPU refine overlay 状態
 - refine timing
 
 注意:
@@ -342,9 +348,13 @@ canvas 側の直接操作。
 - `mode` は表示モードだけに限定
 - 新たに `solver` または `calculation mode` を追加
 
+現状:
+
+- この分離自体はすでに実装済み
+
 期待効果:
 
-- `hybrid` や `CPU refine` の位置づけが明確になる
+- `WebGPU + CPU Refine` の位置づけが明確になる
 - 今後 WebGPU の別計算方式を増やしても UI が破綻しにくい
 
 ### 改善案 2: `y` slider を `y` 平面に置き換える
@@ -385,16 +395,17 @@ canvas 側の直接操作。
 - 表示モードの意味が一貫する
 - compare と debug の関係がわかりやすくなる
 
-### 改善案 5: WebGL / WebGPU の説明を UI 上でも分離する
+### 改善案 5: WebGL / WebGPU の役割差を UI 上でも明示する
 
 やること:
 
 - 計算方式 selector の説明を付ける
-- WebGL と WebGPU の違いを HUD かヘルプに短く出す
+- 主 UI は WebGPU、WebGL は検証用であることを HUD かヘルプに短く出す
 
 期待効果:
 
 - 今見ている結果が、表示モード差なのか計算方式差なのかがわかりやすくなる
+- WebGL を主 UI に戻さずに済む
 
 ## 段階的な進め方
 

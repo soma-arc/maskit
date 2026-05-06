@@ -85,6 +85,11 @@ WebGPU の `Calculation` は現時点で次です。
 - `WebGPU Bounded`
 - `WebGPU + CPU Refine`
 
+既定値は次です。
+
+- `Display`: `BQ Binary Classification`
+- `Calculation`: `WebGPU + CPU Refine`
+
 ## 比較コマンド
 
 基準画像は `img.ppm` です。比較結果は `out/compare/...` に出力されます。  

@@ -14,13 +14,15 @@ import {
 } from './viewer-state.js';
 
 const GPU_COMPARE_MODE = 5;
-const SOLVER_WEBGPU_BOUNDED = 'webgpu-bounded';
 const SOLVER_WEBGPU_CPU_REFINE = 'webgpu-cpu-refine';
 const CPU_REFINE_SETTLE_DELAY_MS = 120;
+const Y_PLANE_LIMIT = 8;
+const Y_PLANE_GRID_STEP = 2;
 
 const elements = getViewerElements();
 const { canvas, cpuRefineCanvas } = elements;
 const cpuRefineContext = cpuRefineCanvas.getContext('2d');
+const yPlaneContext = elements.yPlaneCanvas?.getContext('2d');
 const searchParams = new URLSearchParams(window.location.search);
 const isAutomation = searchParams.get('automation') === '1';
 const state = createInitialViewerState(elements, searchParams);
@@ -37,6 +39,7 @@ let cpuRefineWorkerRequestId = 0;
 let renderScheduled = false;
 let lastRenderTimestamp = 0;
 let cpuRefineSettleTimerId = null;
+let draggingYPlane = false;
 
 const cpuRefineWorkerRequests = new Map();
 
@@ -109,6 +112,102 @@ function setStatusMessage(message = '') {
     updateStatus();
 }
 
+function clampYValue(value) {
+    return Math.max(-Y_PLANE_LIMIT, Math.min(Y_PLANE_LIMIT, value));
+}
+
+function drawYPlane() {
+    if (!yPlaneContext || !elements.yPlaneCanvas) {
+        return;
+    }
+
+    const { width, height } = elements.yPlaneCanvas;
+    const padding = 18;
+    const axisWidth = width - padding * 2;
+    const axisHeight = height - padding * 2;
+    const scaleX = axisWidth / (Y_PLANE_LIMIT * 2);
+    const scaleY = axisHeight / (Y_PLANE_LIMIT * 2);
+
+    yPlaneContext.clearRect(0, 0, width, height);
+
+    yPlaneContext.fillStyle = '#0c1620';
+    yPlaneContext.fillRect(0, 0, width, height);
+
+    yPlaneContext.strokeStyle = 'rgba(124, 197, 255, 0.12)';
+    yPlaneContext.lineWidth = 1;
+    for (let value = -Y_PLANE_LIMIT; value <= Y_PLANE_LIMIT; value += Y_PLANE_GRID_STEP) {
+        const x = padding + (value + Y_PLANE_LIMIT) * scaleX;
+        const y = padding + (Y_PLANE_LIMIT - value) * scaleY;
+        yPlaneContext.beginPath();
+        yPlaneContext.moveTo(x, padding);
+        yPlaneContext.lineTo(x, height - padding);
+        yPlaneContext.stroke();
+        yPlaneContext.beginPath();
+        yPlaneContext.moveTo(padding, y);
+        yPlaneContext.lineTo(width - padding, y);
+        yPlaneContext.stroke();
+    }
+
+    yPlaneContext.strokeStyle = 'rgba(124, 197, 255, 0.42)';
+    yPlaneContext.lineWidth = 1.5;
+    const originX = padding + Y_PLANE_LIMIT * scaleX;
+    const originY = padding + Y_PLANE_LIMIT * scaleY;
+    yPlaneContext.beginPath();
+    yPlaneContext.moveTo(originX, padding);
+    yPlaneContext.lineTo(originX, height - padding);
+    yPlaneContext.stroke();
+    yPlaneContext.beginPath();
+    yPlaneContext.moveTo(padding, originY);
+    yPlaneContext.lineTo(width - padding, originY);
+    yPlaneContext.stroke();
+
+    yPlaneContext.fillStyle = 'rgba(154, 177, 201, 0.85)';
+    yPlaneContext.font = '11px "IBM Plex Sans", sans-serif';
+    yPlaneContext.fillText('Im', 8, 14);
+    yPlaneContext.fillText('Re', width - 26, height - 6);
+
+    const pointX = padding + (clampYValue(state.yReal) + Y_PLANE_LIMIT) * scaleX;
+    const pointY = padding + (Y_PLANE_LIMIT - clampYValue(state.yImag)) * scaleY;
+
+    yPlaneContext.fillStyle = 'rgba(124, 197, 255, 0.18)';
+    yPlaneContext.beginPath();
+    yPlaneContext.arc(pointX, pointY, 11, 0, Math.PI * 2);
+    yPlaneContext.fill();
+
+    yPlaneContext.fillStyle = '#7cc5ff';
+    yPlaneContext.beginPath();
+    yPlaneContext.arc(pointX, pointY, 5, 0, Math.PI * 2);
+    yPlaneContext.fill();
+
+    yPlaneContext.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+    yPlaneContext.lineWidth = 1;
+    yPlaneContext.beginPath();
+    yPlaneContext.arc(pointX, pointY, 5, 0, Math.PI * 2);
+    yPlaneContext.stroke();
+}
+
+function updateYFromPlaneEvent(event) {
+    if (!elements.yPlaneCanvas) {
+        return;
+    }
+    const rect = elements.yPlaneCanvas.getBoundingClientRect();
+    const width = elements.yPlaneCanvas.width;
+    const height = elements.yPlaneCanvas.height;
+    const padding = 18;
+    const axisWidth = width - padding * 2;
+    const axisHeight = height - padding * 2;
+    const localX = ((event.clientX - rect.left) / rect.width) * width;
+    const localY = ((event.clientY - rect.top) / rect.height) * height;
+    const normalizedX = (localX - padding) / axisWidth;
+    const normalizedY = (localY - padding) / axisHeight;
+    state.yReal = clampYValue(normalizedX * (Y_PLANE_LIMIT * 2) - Y_PLANE_LIMIT);
+    state.yImag = clampYValue(Y_PLANE_LIMIT - normalizedY * (Y_PLANE_LIMIT * 2));
+    syncInputsWithState(elements, state);
+    drawYPlane();
+    requestCpuRefineRefreshIfNeeded({ deferCpuRefine: true });
+    updateStatus();
+}
+
 function scheduleRender() {
     if (!renderer || isAutomation || renderScheduled) {
         return;
@@ -139,6 +238,7 @@ function updateStatus() {
         fps,
         message: statusMessage,
     });
+    drawYPlane();
 }
 
 function hideCpuRefineCanvas() {
@@ -492,14 +592,20 @@ canvas.addEventListener('mousedown', (event) => {
 
 window.addEventListener('mouseup', () => {
     const wasDragging = dragging;
+    const wasDraggingYPlane = draggingYPlane;
     dragging = false;
-    if (wasDragging && isCpuRefineEnabled(state)) {
+    draggingYPlane = false;
+    if ((wasDragging || wasDraggingYPlane) && isCpuRefineEnabled(state)) {
         clearCpuRefineSettleTimer();
         requestCpuRefineRefresh();
     }
 });
 
 window.addEventListener('mousemove', (event) => {
+    if (draggingYPlane) {
+        updateYFromPlaneEvent(event);
+        return;
+    }
     if (!dragging) return;
     const { dx, dy } = cssDeltaToBufferDelta(event.clientX - lastX, event.clientY - lastY);
     state.offsetX -= dx / state.scale;
@@ -562,8 +668,8 @@ if (elements.showCpuRefinePreviewInput) {
 }
 
 function updateYFromInputs(nextReal, nextImag) {
-    state.yReal = Number(nextReal);
-    state.yImag = Number(nextImag);
+    state.yReal = clampYValue(Number(nextReal));
+    state.yImag = clampYValue(Number(nextImag));
     syncInputsWithState(elements, state);
     requestCpuRefineRefreshIfNeeded();
     updateStatus();
@@ -577,13 +683,12 @@ elements.yImagInput.addEventListener('input', () => {
     updateYFromInputs(elements.yRealInput.value, elements.yImagInput.value);
 });
 
-elements.yRealSliderInput.addEventListener('input', () => {
-    updateYFromInputs(elements.yRealSliderInput.value, elements.yImagSliderInput.value);
-});
-
-elements.yImagSliderInput.addEventListener('input', () => {
-    updateYFromInputs(elements.yRealSliderInput.value, elements.yImagSliderInput.value);
-});
+if (elements.yPlaneCanvas) {
+    elements.yPlaneCanvas.addEventListener('mousedown', (event) => {
+        draggingYPlane = true;
+        updateYFromPlaneEvent(event);
+    });
+}
 
 for (const input of [elements.sinkItersInput, elements.dfsDepthInput, elements.dfsVisitsInput]) {
     input.addEventListener('input', () => {

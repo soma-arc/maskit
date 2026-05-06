@@ -6,10 +6,10 @@ export function getViewerElements(doc = document) {
         cpuRefineCanvas: doc.getElementById('cpu-refine-c'),
         modeSelect: doc.getElementById('mode'),
         solverSelect: doc.getElementById('solver'),
+        yPlaneCanvas: doc.getElementById('y-plane'),
+        yPlaneReadout: doc.getElementById('y-plane-readout'),
         yRealInput: doc.getElementById('y-real'),
-        yRealSliderInput: doc.getElementById('y-real-slider'),
         yImagInput: doc.getElementById('y-imag'),
-        yImagSliderInput: doc.getElementById('y-imag-slider'),
         renderWidthInput: doc.getElementById('render-width'),
         renderHeightInput: doc.getElementById('render-height'),
         sinkItersInput: doc.getElementById('sink-iters'),
@@ -29,12 +29,10 @@ export function syncInputsWithState(elements, state) {
         elements.solverSelect.value = String(state.solver);
     }
     elements.yRealInput.value = String(state.yReal);
-    if (elements.yRealSliderInput) {
-        elements.yRealSliderInput.value = String(state.yReal);
-    }
     elements.yImagInput.value = String(state.yImag);
-    if (elements.yImagSliderInput) {
-        elements.yImagSliderInput.value = String(state.yImag);
+    if (elements.yPlaneReadout) {
+        const imagSign = state.yImag >= 0 ? '+' : '-';
+        elements.yPlaneReadout.textContent = `${state.yReal.toFixed(3)} ${imagSign} ${Math.abs(state.yImag).toFixed(3)}i`;
     }
     elements.renderWidthInput.value = String(state.width || DEFAULT_RENDER_WIDTH);
     elements.renderHeightInput.value = String(state.height || DEFAULT_RENDER_HEIGHT);

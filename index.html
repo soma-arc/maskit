@@ -75,6 +75,10 @@
         gap: 10px;
       }
 
+      .hud__wide {
+        grid-column: span 2;
+      }
+
       label {
         display: grid;
         gap: 4px;
@@ -121,6 +125,31 @@
       input[type="range"] {
         padding: 0;
         accent-color: #7cc5ff;
+      }
+
+      .complex-plane {
+        display: grid;
+        gap: 8px;
+      }
+
+      .complex-plane__canvas {
+        width: 100%;
+        height: auto;
+        aspect-ratio: 1;
+        border-radius: 12px;
+        background:
+          linear-gradient(180deg, rgba(19, 31, 44, 0.96), rgba(9, 15, 23, 0.96));
+        border: 1px solid rgba(191, 220, 255, 0.18);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        cursor: crosshair;
+      }
+
+      .complex-plane__meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 11px;
+        color: #8ea4bc;
       }
 
       button {
@@ -176,7 +205,7 @@
             <option value="2">Markoff |z|</option>
             <option value="3">Quadratic Discriminant</option>
             <option value="4">H(x) Branch Test</option>
-            <option value="5">BQ Binary Classification</option>
+            <option value="5" selected>BQ Binary Classification</option>
           </select>
         </label>
 
@@ -184,8 +213,22 @@
           Calculation
           <select id="solver">
             <option value="webgpu-bounded">WebGPU Bounded</option>
-            <option value="webgpu-cpu-refine">WebGPU + CPU Refine</option>
+            <option value="webgpu-cpu-refine" selected>WebGPU + CPU Refine</option>
           </select>
+        </label>
+
+        <label class="hud__wide complex-plane">
+          Complex parameter y
+          <canvas
+            id="y-plane"
+            class="complex-plane__canvas"
+            width="220"
+            height="220"
+          ></canvas>
+          <span class="complex-plane__meta">
+            <span id="y-plane-readout">2.000 + 6.000i</span>
+            <span>drag point</span>
+          </span>
         </label>
 
         <label>
@@ -194,18 +237,8 @@
         </label>
 
         <label>
-          y.real slider
-          <input id="y-real-slider" type="range" min="-8" max="8" step="0.01" value="2" />
-        </label>
-
-        <label>
           y.imag
           <input id="y-imag" type="number" step="0.1" value="6" />
-        </label>
-
-        <label>
-          y.imag slider
-          <input id="y-imag-slider" type="range" min="-8" max="8" step="0.01" value="6" />
         </label>
 
         <label>

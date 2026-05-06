@@ -6,6 +6,8 @@ export const DEFAULT_VIEW = {
 export const DEFAULT_RENDER_WIDTH = 640;
 export const DEFAULT_RENDER_HEIGHT = 640;
 export const DEFAULT_WORLD_SPAN = 16;
+export const DEFAULT_WEBGPU_DISPLAY_MODE = 5;
+export const DEFAULT_WEBGPU_SOLVER = 'webgpu-cpu-refine';
 
 export function defaultScaleForResolution(width, height) {
     return Math.max(1, Math.min(width, height) / DEFAULT_WORLD_SPAN);
@@ -50,9 +52,13 @@ export function createInitialViewerState(elements, searchParams) {
         Number.parseInt(elements.renderHeightInput.value, 10) || DEFAULT_RENDER_HEIGHT,
     );
 
-    const mode = parseIntParam(searchParams, 'mode', Number(elements.modeSelect.value));
+    const mode = parseIntParam(
+        searchParams,
+        'mode',
+        Number(elements.modeSelect?.value) || DEFAULT_WEBGPU_DISPLAY_MODE,
+    );
     const solver = elements.solverSelect
-        ? parseStringParam(searchParams, 'solver', elements.solverSelect.value)
+        ? parseStringParam(searchParams, 'solver', elements.solverSelect.value || DEFAULT_WEBGPU_SOLVER)
         : null;
     const showCpuRefinePreview = parseBooleanParam(
         searchParams,
