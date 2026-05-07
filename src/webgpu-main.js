@@ -14,6 +14,7 @@ import {
 } from './viewer-state.js';
 
 const GPU_COMPARE_MODE = 5;
+const GPU_UNKNOWN_PREVIEW_MODE = 6;
 const SOLVER_WEBGPU_CPU_REFINE = 'webgpu-cpu-refine';
 const CPU_REFINE_SETTLE_DELAY_MS = 120;
 const Y_PLANE_LIMIT = 8;
@@ -89,6 +90,21 @@ function getRendererState(viewState) {
 
 function isCpuRefineEnabled(viewState) {
     return viewState.solver === SOLVER_WEBGPU_CPU_REFINE && viewState.mode === GPU_COMPARE_MODE;
+}
+
+function getDisplayRendererState(viewState) {
+    if (!isCpuRefineEnabled(viewState) || !viewState.showCpuRefinePreview) {
+        return getRendererState(viewState);
+    }
+
+    return {
+        ...getRendererState(viewState),
+        mode: GPU_UNKNOWN_PREVIEW_MODE,
+    };
+}
+
+function getExportRendererState(viewState) {
+    return getRendererState(viewState);
 }
 
 function getCpuRefineSignature(viewState) {
@@ -216,7 +232,7 @@ function scheduleRender() {
     renderScheduled = true;
     requestAnimationFrame((now) => {
         renderScheduled = false;
-        renderer.render(getRendererState(state));
+        renderer.render(getDisplayRendererState(state));
         if (lastRenderTimestamp > 0) {
             const deltaMs = now - lastRenderTimestamp;
             fps = deltaMs > 0 ? 1000 / deltaMs : 0;
@@ -361,7 +377,7 @@ async function buildCpuRefineOverlayFrame(viewState) {
         ? await renderer.measureHybridUnknownPass(renderState, {
               presentToCanvas: false,
           })
-        : await renderer.readUnknownPixelIndexBufferSinglePass(renderState, {
+        : await renderer.readUnknownPixelIndexBufferSinglePass(getDisplayRendererState(viewState), {
               presentToCanvas: true,
           });
     const unknownReadbackMs =
@@ -420,7 +436,7 @@ async function buildCpuRefineOverlayFrame(viewState) {
 }
 
 async function buildCpuRefineExportPpm(viewState) {
-    const renderState = getRendererState(viewState);
+    const renderState = getExportRendererState(viewState);
     const exportReadbackStart = performance.now();
     const pixels = await renderer.readPixels(renderState);
     const exportReadbackMs = performance.now() - exportReadbackStart;
@@ -713,7 +729,7 @@ async function buildCurrentFramePpm() {
         return cpuRefineFrame.exportPpm;
     }
 
-    const pixels = await renderer.readPixels(getRendererState(state));
+    const pixels = await renderer.readPixels(getExportRendererState(state));
     return buildPpmFromRgba(state.width, state.height, pixels);
 }
 
@@ -762,7 +778,7 @@ function installAutomationApi() {
             if (isCpuRefineEnabled(state)) {
                 await ensureCpuRefineFrame(true);
             } else {
-                await renderer.renderOnce(getRendererState(state));
+                await renderer.renderOnce(getExportRendererState(state));
             }
             return {
                 ...getState(),
@@ -772,15 +788,15 @@ function installAutomationApi() {
         exportPpm: async () => buildCurrentFramePpm(),
         getPixelState: async (x, y) =>
             renderer.readPixelState(
-                getRendererState(state),
+                getExportRendererState(state),
                 Math.max(0, Math.min(state.width - 1, Math.round(x))),
                 Math.max(0, Math.min(state.height - 1, Math.round(y))),
             ),
         getClassificationStats: async () =>
-            renderer.readClassificationStats(getRendererState(state)),
+            renderer.readClassificationStats(getExportRendererState(state)),
         getUnknownPixelIndices: async (limit = 256) =>
             renderer.readUnknownPixelIndices(
-                getRendererState(state),
+                getExportRendererState(state),
                 Math.max(0, Math.round(limit)),
             ),
         getState,
