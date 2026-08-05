@@ -378,7 +378,7 @@ async function buildCpuRefineOverlayFrame(viewState) {
               presentToCanvas: false,
           })
         : await renderer.readUnknownPixelIndexBufferSinglePass(getDisplayRendererState(viewState), {
-              presentToCanvas: true,
+              presentToCanvas: false,
           });
     const unknownReadbackMs =
         (unknownPayload.timing?.classifySubmitMs ?? 0) +
@@ -486,20 +486,26 @@ async function ensureCpuRefineFrame(force = false) {
         return null;
     }
 
-    const signature = getCpuRefineSignature(state);
+    const viewState = { ...state };
+    const signature = getCpuRefineSignature(viewState);
     if (!force && cpuRefineFrame.signature === signature && cpuRefineFrame.refinement != null) {
         syncCpuRefineCanvasVisibility();
         return cpuRefineFrame;
     }
 
-    const nextFrame = await buildCpuRefineOverlayFrame(state);
+    const nextFrame = await buildCpuRefineOverlayFrame(viewState);
+    if (!isCpuRefineEnabled(state) || getCpuRefineSignature(state) !== signature) {
+        syncCpuRefineCanvasVisibility();
+        return null;
+    }
+
     cpuRefineFrame.signature = nextFrame.signature;
     cpuRefineFrame.exportPpm = null;
     cpuRefineFrame.refinement = nextFrame.refinement;
     cpuRefineFrame.unknownIndices = nextFrame.unknownIndices;
     cpuRefineFrame.resolvedValues = nextFrame.resolvedValues;
     cpuRefineFrame.timing = nextFrame.timing;
-    drawCpuRefineFrame(state.width, state.height, nextFrame.pixels);
+    drawCpuRefineFrame(viewState.width, viewState.height, nextFrame.pixels);
     if (!isAutomation) {
         const now = performance.now();
         if (lastRenderTimestamp > 0) {
